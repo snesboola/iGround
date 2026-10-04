@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from iground import cli, devicebackup, layout, readiness
+from iground import manifest as mf
 from iground.backup import BackupOptions, prepare, run_backup
 from iground.migrate import MigrationError
 from iground.photos import PhotoItem, PhotosClient, PhotosError, PhotosExporter, place_file
@@ -241,6 +242,53 @@ class PhotosTests(unittest.TestCase):
         self.assertFalse(res.album_folders)
         self.assertFalse((self.dest / "Albums").exists())
         self.assertTrue((self.state / "albums.json").exists())
+
+    def test_exfat_companion_files_are_ignored(self):
+        """Reproduces a real crash: macOS '._' companions on an exFAT SSD move with their file."""
+        client = make_photos()
+        # Named like the real file: '-' sorts before '._', so the video is moved before its companion.
+        client.items.append(PhotoItem("p5", ts(2024, 5, 1), "-1128055693294301451.mp4"))
+        client.outputs["p5"] = {"-1128055693294301451.mp4": b"video"}
+        real_export = client.export
+
+        def export_with_companions(jobs, timeout):
+            res = real_export(jobs, timeout)
+            for _, folder in jobs:
+                for f in list(Path(folder).iterdir()):
+                    (Path(folder) / f"._{f.name}").write_bytes(b"\x00\x05\x16\x07 mac info")
+            return res
+
+        client.export = export_with_companions
+        real_replace = os.replace
+
+        def mac_replace(src, dst):  # like macOS on exFAT: the companion travels with the file
+            real_replace(src, dst)
+            comp = Path(src).with_name(f"._{Path(src).name}")
+            if comp.exists():
+                real_replace(comp, Path(dst).with_name(f"._{Path(dst).name}"))
+
+        with mock.patch("iground.photos.os.replace", side_effect=mac_replace):
+            res = self.export(client)
+        self.assertEqual((res.exported, res.failed, res.files), (5, 0, 6))
+        self.assertTrue((self.dest / "2024" / "05 May" / "-1128055693294301451.mp4").exists())
+        with mf.Manifest(self.state) as m:
+            self.assertFalse(any("._" in r.rel_path for r in m.records()))
+
+    def test_one_bad_item_does_not_stop_the_rest(self):
+        client = make_photos()
+        real_place = place_file
+
+        def flaky(src, folder):
+            if src.name == "scan.png":
+                raise FileNotFoundError(2, "No such file or directory")
+            return real_place(src, folder)
+
+        with mock.patch("iground.photos.place_file", side_effect=flaky):
+            res = self.export(client)
+        self.assertEqual((res.exported, res.failed), (3, 1))
+        self.assertIn("couldn't save it to the SSD", res.errors[0][1])
+        res = self.export(client)  # the next run picks it up
+        self.assertEqual((res.exported, res.failed), (1, 0))
 
     def test_dry_run(self):
         client = make_photos()

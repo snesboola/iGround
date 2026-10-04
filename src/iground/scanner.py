@@ -12,7 +12,8 @@ from typing import Iterator, List, Sequence
 
 from . import icloud
 
-DEFAULT_EXCLUDES = (".DS_Store", "Icon\r", ".localized", ".iground", ".Trash")
+# "._*" are macOS companion files on exFAT/FAT drives (extra Mac info for the file of the same name).
+DEFAULT_EXCLUDES = (".DS_Store", "._*", "Icon\r", ".localized", ".iground", ".Trash")
 
 
 class State(str, Enum):

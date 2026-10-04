@@ -184,6 +184,21 @@ class PhotosResult:
 PhotoProgress = Callable[[str, PhotoItem, str], None]
 
 
+def is_metadata_file(name: str) -> bool:
+    """macOS bookkeeping files, not photos.
+
+    On drives formatted as exFAT/FAT, macOS stores a file's extra Mac information in a hidden
+    '._name' companion next to it, and moves that companion along whenever the file is moved.
+    """
+    return name.startswith("._") or name == ".DS_Store"
+
+
+def exported_files(folder: Path) -> List[Path]:
+    if not folder.exists():
+        return []
+    return sorted(p for p in folder.rglob("*") if p.is_file() and not is_metadata_file(p.name))
+
+
 def place_file(src: Path, folder: Path) -> Tuple[Path, str]:
     """Move an exported file into `folder`, never overwriting a different file. Returns (path, sha256)."""
     folder.mkdir(parents=True, exist_ok=True)
@@ -271,30 +286,33 @@ class PhotosExporter:
 
         for it, (_, folder) in zip(batch, jobs):
             error = outcomes.get(it.id)
-            exported = sorted(p for p in folder.rglob("*") if p.is_file()) if folder.exists() else []
+            exported = exported_files(folder)
             if error is None and not exported:
                 error = "Photos reported success but produced no file"
+            rel_files = []
+            if error is None:
+                try:
+                    for f in exported:
+                        final, sha = place_file(f, self.dest / it.folder())
+                        if it.taken_at is not None:
+                            os.utime(final, (it.taken_at, it.taken_at))
+                        st = final.stat()
+                        rel = final.relative_to(self.dest).as_posix()
+                        manifest.put(rel, "file", st.st_size, st.st_mtime_ns, mf.VERIFIED, sha256=sha)
+                        rel_files.append(rel)
+                        result.files += 1
+                        result.bytes += st.st_size
+                except OSError as exc:  # one awkward item must not stop the whole export
+                    error = f"couldn't save it to the SSD: {exc.strerror or exc}"
             if error is not None:
                 manifest.put_photo(it.id, mf.FAILED, it.taken_at, error=error)
                 result.failed += 1
                 result.errors.append((it.filename or it.id, error))
                 self.progress("failed", it, error)
-                shutil.rmtree(folder, ignore_errors=True)
-                continue
-            rel_files = []
-            for f in exported:
-                final, sha = place_file(f, self.dest / it.folder())
-                if it.taken_at is not None:
-                    os.utime(final, (it.taken_at, it.taken_at))
-                st = final.stat()
-                rel = final.relative_to(self.dest).as_posix()
-                manifest.put(rel, "file", st.st_size, st.st_mtime_ns, mf.VERIFIED, sha256=sha)
-                rel_files.append(rel)
-                result.files += 1
-                result.bytes += st.st_size
-            manifest.put_photo(it.id, mf.EXPORTED, it.taken_at, files=rel_files)
-            result.exported += 1
-            self.progress("exported", it, "")
+            else:
+                manifest.put_photo(it.id, mf.EXPORTED, it.taken_at, files=rel_files)
+                result.exported += 1
+                self.progress("exported", it, "")
             shutil.rmtree(folder, ignore_errors=True)
 
     def _save_albums(self, items: Sequence[PhotoItem], manifest: mf.Manifest) -> Tuple[bool, bool]:
