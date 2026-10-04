@@ -61,9 +61,16 @@ class Record:
     error: Optional[str]
 
 
+def default_state_dir(dest: Path) -> Path:
+    """Where a manifest lives when no central state folder is given: hidden inside `dest`."""
+    return Path(dest) / MANIFEST_DIR
+
+
 class Manifest:
-    def __init__(self, dest: Path) -> None:
-        directory = Path(dest) / MANIFEST_DIR
+    """The manifest database inside `state_dir` (a folder holding iGround's bookkeeping)."""
+
+    def __init__(self, state_dir: Path) -> None:
+        directory = Path(state_dir)
         directory.mkdir(parents=True, exist_ok=True)
         self.path = directory / MANIFEST_NAME
         self._lock = threading.Lock()
@@ -73,8 +80,8 @@ class Manifest:
         self._db.commit()
 
     @classmethod
-    def exists(cls, dest: Path) -> bool:
-        return (Path(dest) / MANIFEST_DIR / MANIFEST_NAME).exists()
+    def exists(cls, state_dir: Path) -> bool:
+        return (Path(state_dir) / MANIFEST_NAME).exists()
 
     def close(self) -> None:
         with self._lock:

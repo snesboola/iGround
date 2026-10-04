@@ -7,11 +7,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-from . import devicebackup
+from . import devicebackup, layout
 from . import manifest as mf
 from .migrate import diff_against_source
 from .photos import PhotosClient, PhotosError
-from .sources import ALL_KINDS, PHOTOS, PHOTOS_DIR, Locations, folder_sources
+from .sources import ALL_KINDS, PHOTOS, Locations, folder_sources
 
 OK, MISSING, MANUAL = "ok", "missing", "manual"
 BACKUP_MAX_AGE = timedelta(days=14)
@@ -66,30 +66,30 @@ def build_report(
 ) -> Report:
     dest = Path(dest).expanduser()
     report = Report()
-    migrate_cmd = f'iground migrate "{dest}"'
+    migrate_cmd = "Run iGround again to copy what's missing"
+
+    if PHOTOS in kinds:
+        report.checks.append(_photos_check(layout.state_dir(dest, "Photos"), photos_client or PhotosClient(),
+                                           migrate_cmd))
 
     for src in folder_sources(loc, kinds):
-        target = src.dest(dest)
-        diff = diff_against_source(src.path, target)
+        diff = diff_against_source(src.path, src.dest(dest), state_dir=layout.state_dir(dest, src.state_key))
         if not diff.missing and not diff.changed:
-            report.checks.append(Check(src.label, OK, f"{_plural(diff.on_ssd, 'file')} on the SSD"))
+            report.checks.append(Check(src.label, OK, f"{_plural(diff.on_ssd, 'file')} copied"))
         else:
             parts = []
             if diff.missing:
                 parts.append(f"{_plural(len(diff.missing), 'file')} not copied yet (e.g. {diff.missing[0]})")
             if diff.changed:
-                parts.append(f"{_plural(len(diff.changed), 'file')} changed since copied")
-            report.checks.append(Check(src.label, MISSING, "; ".join(parts), f"{migrate_cmd} --only {src.kind}"))
-
-    if PHOTOS in kinds:
-        report.checks.append(_photos_check(dest / PHOTOS_DIR, photos_client or PhotosClient(), migrate_cmd))
+                parts.append(f"{_plural(len(diff.changed), 'file')} changed since they were copied")
+            report.checks.append(Check(src.label, MISSING, "; ".join(parts), migrate_cmd))
 
     report.checks.append(_backup_check(loc, dest))
     report.checks.extend(MANUAL_STEPS)
     return report
 
 
-def _photos_check(target: Path, client: PhotosClient, migrate_cmd: str) -> Check:
+def _photos_check(state: Path, client: PhotosClient, migrate_cmd: str) -> Check:
     if not client.available:
         return Check("Photos", MISSING, "cannot read the Photos library (macOS + Photos.app required)")
     try:
@@ -97,22 +97,22 @@ def _photos_check(target: Path, client: PhotosClient, migrate_cmd: str) -> Check
     except PhotosError as exc:
         return Check("Photos", MISSING, f"could not read the Photos library: {exc}")
     exported = {}
-    if mf.Manifest.exists(target):
-        with mf.Manifest(target) as manifest:
+    if mf.Manifest.exists(state):
+        with mf.Manifest(state) as manifest:
             exported = manifest.photo_statuses()
     missing = [it for it in items if exported.get(it.id) != mf.EXPORTED]
     if not missing:
-        return Check("Photos", OK, f"all {_plural(len(items), 'item')} exported as originals")
-    return Check("Photos", MISSING, f"{_plural(len(missing), 'item')} of {len(items):,} not exported yet",
-                 f"{migrate_cmd} --only photos")
+        return Check("Photos", OK, f"all {len(items):,} photos & videos copied")
+    return Check("Photos", MISSING, f"{len(missing):,} of {len(items):,} photos & videos not copied yet",
+                 migrate_cmd)
 
 
 def _backup_check(loc: Locations, dest: Path) -> Check:
-    name = "iPhone / iPad backup (incl. WhatsApp)"
-    setup = f'iground iphone-backup "{dest}"   then back up in Finder'
+    name = "iPhone backup (incl. WhatsApp)"
+    setup = "Connect your iPhone, open Finder, select it and click 'Back Up Now'"
     backups = devicebackup.list_backups(devicebackup.ssd_backup_dir(dest))
     if not backups:
-        return Check(name, MISSING, "no device backup on the SSD", setup)
+        return Check(name, MISSING, "no iPhone backup on the SSD yet", setup)
     now = datetime.now()
     lines, stale = [], False
     for b in backups:
@@ -125,7 +125,7 @@ def _backup_check(loc: Locations, dest: Path) -> Check:
         lines.append(f"{b.device} — {when:%Y-%m-%d} ({enc})" if when else f"{b.device} — date unknown")
     detail = "; ".join(lines)
     if not devicebackup.is_relocated(loc, dest):
-        detail += " — note: Finder is not set to back up to this SSD"
+        detail += " — note: new iPhone backups are not set to go to this SSD"
     if stale:
         return Check(name, MISSING, detail + f"; older than {BACKUP_MAX_AGE.days} days",
                      "Connect each device and click 'Back Up Now' in Finder")

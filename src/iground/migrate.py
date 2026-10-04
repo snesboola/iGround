@@ -83,8 +83,10 @@ class Migrator:
         options: Optional[Options] = None,
         client: Optional[ICloudClient] = None,
         progress: Optional[Progress] = None,
+        state_dir: Optional[Path] = None,
     ) -> None:
         self.source, self.dest = check_paths(source, dest)
+        self.state_dir = Path(state_dir) if state_dir else mf.default_state_dir(self.dest)
         self.options = options or Options()
         self.client = client or ICloudClient()
         self.progress = progress or (lambda *_: None)
@@ -104,15 +106,15 @@ class Migrator:
 
         if opts.dry_run:
             todo = entries
-            if mf.Manifest.exists(self.dest):
-                with mf.Manifest(self.dest) as manifest:
+            if mf.Manifest.exists(self.state_dir):
+                with mf.Manifest(self.state_dir) as manifest:
                     todo = [e for e in entries if not already_done(e, self.dest, manifest)]
             result.skipped = len(entries) - len(todo)
             for e in todo:
                 self.progress("planned", e, "")
             return result
 
-        with mf.Manifest(self.dest) as manifest:
+        with mf.Manifest(self.state_dir) as manifest:
             manifest.set_meta("source", str(self.source))
             todo = []
             for e in entries:
@@ -189,16 +191,22 @@ class VerifyResult:
     not_migrated: List[str] = field(default_factory=list)
 
 
-def verify(dest: Path, source: Optional[Path] = None, excludes: Sequence[str] = DEFAULT_EXCLUDES) -> VerifyResult:
+def verify(
+    dest: Path,
+    source: Optional[Path] = None,
+    excludes: Sequence[str] = DEFAULT_EXCLUDES,
+    state_dir: Optional[Path] = None,
+) -> VerifyResult:
     """Re-hash every migrated file on the SSD against the manifest.
 
     With `source`, also report files in iCloud Drive that were never migrated.
     """
     dest = Path(dest).expanduser().resolve()
-    if not mf.Manifest.exists(dest):
-        raise MigrationError(f"no iGround manifest found in {dest}")
+    state_dir = Path(state_dir) if state_dir else mf.default_state_dir(dest)
+    if not mf.Manifest.exists(state_dir):
+        raise MigrationError(f"no iGround manifest found for {dest}")
     out = VerifyResult()
-    with mf.Manifest(dest) as manifest:
+    with mf.Manifest(state_dir) as manifest:
         for rec in manifest.records():
             if rec.status not in mf.DONE_STATUSES:
                 continue
@@ -232,12 +240,18 @@ class Diff:
     changed: List[str] = field(default_factory=list)  # migrated, but the source changed since
 
 
-def diff_against_source(source: Path, dest: Path, excludes: Sequence[str] = DEFAULT_EXCLUDES) -> Diff:
+def diff_against_source(
+    source: Path,
+    dest: Path,
+    excludes: Sequence[str] = DEFAULT_EXCLUDES,
+    state_dir: Optional[Path] = None,
+) -> Diff:
     """Quick (no hashing) comparison of a source folder with what the manifest says is on the SSD."""
     out = Diff()
     done = {}
-    if mf.Manifest.exists(dest):
-        with mf.Manifest(dest) as manifest:
+    state_dir = Path(state_dir) if state_dir else mf.default_state_dir(dest)
+    if mf.Manifest.exists(state_dir):
+        with mf.Manifest(state_dir) as manifest:
             done = {r.rel_path: r for r in manifest.records() if r.status in mf.DONE_STATUSES}
     for e in scan(Path(source), excludes):
         rec = done.get(e.rel_path)

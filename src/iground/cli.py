@@ -1,240 +1,120 @@
-"""Command-line interface.
+"""Command line.
 
-    iground audit   [DEST]          what's in iCloud, and what it will take
-    iground migrate DEST            copy everything (Drive, app folders, Photos, Messages)
-    iground iphone-backup DEST      make Finder back up iPhones (incl. WhatsApp) to the SSD
-    iground ready   DEST            is it safe to downgrade iCloud storage?
-    iground verify  DEST            re-check every checksum on the SSD
-    iground status  DEST            progress and failures
+    iground                      guided backup (the easy way — same as double-clicking iGround.command)
+
+    iground backup  DRIVE        copy everything into DRIVE/iCloud Backup YYYY-MM-DD
+    iground ready   DRIVE        is it safe to downgrade iCloud storage?
+    iground iphone-backup DRIVE  keep iPhone backups (incl. WhatsApp) on the SSD
+    iground audit  [DRIVE]       what's in iCloud and how big it is
+    iground verify  DRIVE        re-check every file's checksum
+    iground status  DRIVE        progress and failures
+
+DRIVE can be the SSD itself (the newest backup on it is used) or a backup folder.
 """
 
 from __future__ import annotations
 
 import argparse
 import shutil
-import subprocess
 import sys
-import threading
-import time
 from pathlib import Path
 from typing import List, Optional, TextIO
 
-from . import __version__, devicebackup, readiness
+from . import __version__, devicebackup, layout, readiness
 from . import manifest as mf
-from .icloud import ICloudClient
-from .migrate import MigrationError, Migrator, Options, verify
-from .photos import PhotosClient, PhotosError, PhotosExporter
-from .scanner import DEFAULT_EXCLUDES, Summary, scan
-from .sources import (
-    ALL_KINDS, APPS_DIR, DRIVE_DIR, MESSAGES, MESSAGES_DIR, PHOTOS, PHOTOS_DIR, Locations, folder_sources, parse_kinds,
-)
+from .backup import BackupOptions, Reporter, SectionResult, prepare, run_backup, summarize
+from .migrate import MigrationError, verify
+from .photos import PhotosClient, PhotosError
+from .scanner import DEFAULT_EXCLUDES
+from .sources import ALL_KINDS, PHOTOS, Locations, folder_sources, parse_kinds
+from .ui import Console, ProgressPrinter, human
+from .wizard import Wizard
 
 
-def human(n: float) -> str:
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if abs(n) < 1000 or unit == "TB":
-            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
-        n /= 1000
-    return f"{n:.1f} TB"
+class CLIReporter(Reporter):
+    def __init__(self, out: TextIO, verbose: bool):
+        self.out, self.verbose = out, verbose
+        self.printer: Optional[ProgressPrinter] = None
+
+    def section(self, label, index, total, items, size):
+        self.out.write(f"\n[{index}/{total}] {label}\n")
+        self.printer = ProgressPrinter(items, size, verbose=self.verbose)
+        return self.printer
+
+    def section_done(self, result: SectionResult) -> None:
+        if self.printer:
+            self.printer.finish()
+        self.out.write(f"  {'✓' if result.ok else '✗'} {result.summary}\n")
+        for name, msg in result.errors[:20]:
+            self.out.write(f"    {name}: {msg}\n")
 
 
-class ProgressPrinter:
-    """Single-line progress on a TTY, plain log lines otherwise. Works for files and photos."""
-
-    def __init__(self, total_items: int, total_bytes: int = 0, stream: TextIO = sys.stderr, verbose: bool = False):
-        self.total_items = total_items
-        self.total_bytes = total_bytes
-        self.stream = stream
-        self.verbose = verbose
-        self.tty = stream.isatty()
-        self.done_items = 0
-        self.done_bytes = 0
-        self.start = time.monotonic()
-        self._last = 0.0
-        self._lock = threading.Lock()
-
-    def __call__(self, event: str, item, detail: str) -> None:
-        name = getattr(item, "rel_path", None) or getattr(item, "filename", None) or getattr(item, "id", "?")
-        size = getattr(item, "size", 0)
-        with self._lock:
-            if event in ("copied", "skipped", "failed", "exported"):
-                self.done_items += 1
-                self.done_bytes += size
-            if event == "failed":
-                self._line(f"FAILED  {name}: {detail}")
-            elif event == "planned":
-                tag = "download+copy" if getattr(item, "needs_download", False) else "copy"
-                self._line(f"  {tag:14} {human(size):>9}  {name}" if size else f"  export          {name}")
-            elif self.verbose and event in ("copied", "download", "exported"):
-                self._line(f"  {event:8} {name}")
-            self._status()
-
-    def _line(self, text: str) -> None:
-        if self.tty:
-            self.stream.write("\r\033[K")
-        self.stream.write(text + "\n")
-
-    def _status(self) -> None:
-        if not self.tty:
-            return
-        now = time.monotonic()
-        if now - self._last < 0.2:
-            return
-        self._last = now
-        line = f"\r\033[K  {self.done_items:,}/{self.total_items:,}"
-        if self.total_bytes:
-            rate = self.done_bytes / max(now - self.start, 1e-6)
-            pct = 100.0 * self.done_bytes / self.total_bytes
-            line += f"  {human(self.done_bytes)}/{human(self.total_bytes)} ({pct:.0f}%)  {human(rate)}/s"
-        self.stream.write(line)
-        self.stream.flush()
-
-    def finish(self) -> None:
-        if self.tty:
-            self.stream.write("\r\033[K")
-            self.stream.flush()
+def resolve_backup(path: str) -> Path:
+    try:
+        return layout.resolve(Path(path))
+    except FileNotFoundError as exc:
+        raise MigrationError(str(exc)) from exc
 
 
-def summarize(path: Path, excludes) -> Summary:
-    s = Summary()
-    for e in scan(path, excludes):
-        s.add(e)
-    return s
-
-
-def messages_running(runner=subprocess.run) -> bool:
-    if not shutil.which("pgrep"):
-        return False
-    return runner(["pgrep", "-x", "Messages"], capture_output=True).returncode == 0
-
-
-# --- commands ----------------------------------------------------------------
+def cmd_backup(args: argparse.Namespace, out: TextIO) -> int:
+    loc = Locations.default()
+    drive = Path(args.drive).expanduser()
+    if layout.is_backup(drive):
+        drive = drive.parent
+    if not drive.is_dir():
+        raise MigrationError(f"{drive} not found — is the SSD plugged in?")
+    opts = BackupOptions(
+        kinds=parse_kinds(args.only), workers=args.workers, verify=not args.no_verify,
+        evict_after=args.evict_after, dry_run=args.dry_run, force=args.force,
+        download_timeout=args.download_timeout, photos_batch=args.photos_batch, excludes=args.exclude,
+    )
+    if args.dry_run:
+        existing = layout.find_backups(drive)
+        root = existing[-1] if existing and not args.new else drive / "(new backup)"
+        out.write(f"Dry run for {root} — nothing will be changed.\n")
+    else:
+        root = prepare(loc, drive, new=args.new).root
+        out.write(f"Backing up to {root}\n")
+    results = run_backup(loc, root, opts, CLIReporter(out, args.verbose))
+    if args.dry_run:
+        return 0
+    if all(r.ok for r in results):
+        out.write(f'\nDone. Check with: iground ready "{drive}"\n')
+        return 0
+    out.write("\nSome items weren't copied. Run the same command again to retry them.\n")
+    return 1
 
 
 def cmd_audit(args: argparse.Namespace, out: TextIO) -> int:
     loc = Locations.default()
     kinds = parse_kinds(args.only)
     total = cloud = 0
-    out.write("What iGround will move off iCloud\n\n")
+    out.write("What's in your iCloud\n\n")
+    if PHOTOS in kinds:
+        client = PhotosClient()
+        if not client.available:
+            out.write("  Photos: needs a Mac with the Photos app\n")
+        else:
+            try:
+                out.write(f"  {'Photos':32} {len(client.list_items()):>8,} photos & videos\n")
+            except PhotosError as exc:
+                out.write(f"  Photos: could not open the library: {exc}\n")
     for src in folder_sources(loc, kinds):
         s = summarize(src.path, args.exclude)
         total += s.total_bytes
         cloud += s.cloud_bytes
-        extra = f", {human(s.cloud_bytes)} only in iCloud (will be downloaded)" if s.cloud_bytes else ""
-        out.write(f"  {src.label:40} {s.files:>8,} files  {human(s.total_bytes):>9}{extra}\n")
-    if PHOTOS in kinds:
-        client = PhotosClient()
-        if not client.available:
-            out.write("  Photos                                   (needs macOS; skipped)\n")
-        else:
-            try:
-                n = len(client.list_items())
-                out.write(f"  {'Photos library':40} {n:>8,} items  (originals downloaded from iCloud during export)\n")
-            except PhotosError as exc:
-                out.write(f"  Photos: could not read library: {exc}\n")
-    out.write(f"\n  Files total: {human(total)} ({human(cloud)} to download first). Add your Photos library size on top.\n")
-
+        extra = f"  ({human(s.cloud_bytes)} only in iCloud)" if s.cloud_bytes else ""
+        out.write(f"  {src.label:32} {s.files:>8,} files  {human(s.total_bytes):>9}{extra}\n")
+    out.write(f"\n  Files: {human(total)}, of which {human(cloud)} must be downloaded first (photos come on top).\n")
     backups = devicebackup.list_backups(loc.mobilesync_backup)
-    out.write(f"\niPhone/iPad backups on this Mac ({loc.mobilesync_backup}): ")
-    out.write(", ".join(f"{b.device} ({b.last_backup:%Y-%m-%d})" if b.last_backup else b.device for b in backups)
-              or "none")
-    out.write("\n  WhatsApp chats are only safe off-iCloud inside such a backup — see `iground iphone-backup`.\n")
-
-    if args.dest:
-        dest = Path(args.dest).expanduser()
-        if dest.exists():
-            free = shutil.disk_usage(dest).free
+    out.write("  iPhone backups on this Mac: " + (", ".join(
+        f"{b.device} ({b.last_backup:%Y-%m-%d})" if b.last_backup else b.device for b in backups) or "none") + "\n")
+    if args.drive:
+        drive = Path(args.drive).expanduser()
+        if drive.exists():
+            free = shutil.disk_usage(drive).free
             verdict = "enough for the files" if free > total else "NOT enough even for the files"
-            out.write(f"\nSSD free space: {human(free)} — {verdict}.\n")
-    return 0
-
-
-def cmd_migrate(args: argparse.Namespace, out: TextIO) -> int:
-    loc = Locations.default()
-    kinds = parse_kinds(args.only)
-    dest = Path(args.dest).expanduser()
-    if not args.dry_run and not dest.parent.exists():
-        raise MigrationError(f"{dest.parent} does not exist — is the SSD connected?")
-    failed = 0
-
-    if MESSAGES in kinds and not args.dry_run and messages_running():
-        out.write("Note: Messages is open. Quit it for a consistent copy of your message database.\n")
-
-    for src in folder_sources(loc, kinds):
-        target = src.dest(dest)
-        out.write(f"\n== {src.label} -> {target}\n")
-        pre = summarize(src.path, args.exclude)
-        printer = ProgressPrinter(pre.files + pre.symlinks, pre.total_bytes, verbose=args.verbose)
-        opts = Options(
-            workers=args.workers,
-            verify=not args.no_verify,
-            evict_after=args.evict_after and src.icloud_managed,
-            dry_run=args.dry_run,
-            force=args.force,
-            download_timeout=args.download_timeout,
-            excludes=args.exclude,
-        )
-        client = ICloudClient() if src.icloud_managed else ICloudClient(brctl="")
-        try:
-            result = Migrator(src.path, target, opts, client, printer).run()
-        except MigrationError as exc:
-            printer.finish()
-            out.write(f"  skipped: {exc}\n")
-            failed += 1
-            continue
-        printer.finish()
-        if args.dry_run:
-            todo = result.planned.files + result.planned.symlinks - result.skipped
-            out.write(f"  would copy {todo:,} item(s) ({human(result.planned.cloud_bytes)} to download first), "
-                      f"{result.skipped:,} already done\n")
-            continue
-        out.write(f"  copied {result.copied:,} ({human(result.bytes_copied)}), "
-                  f"already done {result.skipped:,}, failed {result.failed:,}")
-        if opts.evict_after:
-            out.write(f", freed {result.evicted:,} from this Mac")
-        out.write("\n")
-        for rel, msg in result.errors[:20]:
-            out.write(f"    {rel}: {msg}\n")
-        failed += result.failed
-
-    if PHOTOS in kinds:
-        target = dest / PHOTOS_DIR
-        out.write(f"\n== Photos library -> {target}\n")
-        client = PhotosClient()
-        if not client.available:
-            out.write("  skipped: exporting Photos requires macOS\n")
-            failed += 1
-        else:
-            printer = ProgressPrinter(0, verbose=args.verbose)
-            exporter = PhotosExporter(target, client, batch_size=args.photos_batch,
-                                      item_timeout=int(args.download_timeout), progress=printer)
-            try:
-                res = exporter.run(dry_run=args.dry_run)
-            except PhotosError as exc:
-                printer.finish()
-                out.write(f"  stopped: {exc}\n")
-                failed += 1
-            else:
-                printer.finish()
-                if args.dry_run:
-                    out.write(f"  would export {res.total - res.skipped:,} of {res.total:,} items "
-                              f"({res.skipped:,} already done)\n")
-                else:
-                    out.write(f"  exported {res.exported:,} item(s) as {res.files:,} file(s) ({human(res.bytes)}), "
-                              f"already done {res.skipped:,}, failed {res.failed:,}\n")
-                    if not res.albums_saved:
-                        out.write("  note: album list could not be read; albums.json has favourites only\n")
-                    for name, msg in res.errors[:20]:
-                        out.write(f"    {name}: {msg}\n")
-                    failed += res.failed
-
-    if args.dry_run:
-        out.write("\nDry run — nothing was changed.\n")
-        return 0
-    if failed:
-        out.write("\nSome items failed. Re-run the same command to retry them (finished items are skipped).\n")
-        return 1
-    out.write(f'\nDone. Next: `iground iphone-backup "{dest}"`, then `iground ready "{dest}"`.\n')
+            out.write(f"\n  SSD free space: {human(free)} — {verdict}.\n")
     return 0
 
 
@@ -243,151 +123,154 @@ def cmd_iphone_backup(args: argparse.Namespace, out: TextIO) -> int:
     if args.undo:
         out.write(devicebackup.undo(loc) + "\n")
         return 0
-    out.write(devicebackup.relocate(loc, Path(args.dest).expanduser()) + "\n")
+    drive = Path(args.drive).expanduser()
+    root = layout.resolve(drive) if (layout.is_backup(drive) or layout.find_backups(drive)) \
+        else prepare(loc, drive).root
+    out.write(devicebackup.relocate(loc, root) + "\n")
     out.write(
-        "\nNow back up each iPhone/iPad (this is what keeps your WhatsApp chats safe):\n"
-        "  1. Connect the device to this Mac with the SSD plugged in, open Finder and select the device.\n"
+        "\nNow back up your iPhone:\n"
+        "  1. Connect it to this Mac (SSD plugged in) and select it in the Finder sidebar.\n"
         "  2. Choose 'Back up all of the data on your iPhone to this Mac'.\n"
-        "  3. Tick 'Encrypt local backup' (needed for passwords, Health and Wi-Fi data; remember the password!).\n"
-        "  4. Click 'Back Up Now'. Repeat regularly — keep the SSD connected while backing up.\n"
+        "  3. Tick 'Encrypt local backup' and pick a password you'll remember.\n"
+        "  4. Click 'Back Up Now'.\n"
     )
     return 0
 
 
 def cmd_ready(args: argparse.Namespace, out: TextIO) -> int:
-    loc = Locations.default()
-    report = readiness.build_report(loc, Path(args.dest), parse_kinds(args.only))
-    icons = {readiness.OK: "[OK]  ", readiness.MISSING: "[TODO]", readiness.MANUAL: "[NOTE]"}
+    root = resolve_backup(args.drive)
+    report = readiness.build_report(Locations.default(), root, parse_kinds(args.only))
+    out.write(f"{root}\n\n")
+    marks = {readiness.OK: "✓", readiness.MISSING: "✗", readiness.MANUAL: "·"}
     for c in report.checks:
-        out.write(f"{icons[c.status]} {c.name}: {c.detail}\n")
+        out.write(f"{marks[c.status]} {c.name}: {c.detail}\n")
         if c.fix:
-            out.write(f"         → {c.fix}\n")
+            out.write(f"    → {c.fix}\n")
     if report.ready:
-        out.write("\nREADY: everything iGround can move is on the SSD. Follow the notes above, then downgrade.\n")
+        out.write("\nREADY: everything is on the SSD. Follow the notes above, then downgrade.\n")
         return 0
-    out.write("\nNOT READY: finish the [TODO] items before deleting anything from iCloud.\n")
+    out.write("\nNOT READY: finish the ✗ items before deleting anything from iCloud.\n")
     return 1
 
 
-def _targets(dest: Path, loc: Locations):
-    """(label, ssd folder, source folder or None) for everything migrated under DEST."""
-    sources = {src.dest(dest): src for src in folder_sources(loc)}
+def _targets(root: Path, loc: Locations):
+    """(label, folder on SSD, source folder or None, state dir) for each section of a backup."""
+    sources = {src.state_key: src for src in folder_sources(loc)}
+    state_root = root / layout.STATE_DIR
     found = []
-    candidates = [dest / DRIVE_DIR, dest / PHOTOS_DIR, dest / MESSAGES_DIR]
-    if (dest / APPS_DIR).is_dir():
-        candidates += sorted(p for p in (dest / APPS_DIR).iterdir() if p.is_dir())
-    for path in candidates:
-        if mf.Manifest.exists(path):
-            src = sources.get(path)
-            found.append((src.label if src else path.relative_to(dest).as_posix(), path,
-                          src.path if src else None))
+    if state_root.is_dir():
+        for state in sorted(state_root.iterdir()):
+            if not mf.Manifest.exists(state):
+                continue
+            src = sources.get(state.name)
+            folder = root / state.name.replace("--", "/")
+            found.append((src.label if src else state.name.replace("--", "/"), folder,
+                          src.path if src else None, state))
     return found
 
 
 def cmd_verify(args: argparse.Namespace, out: TextIO) -> int:
-    dest = Path(args.dest).expanduser()
-    targets = _targets(dest, Locations.default())
-    if not targets:
-        raise MigrationError(f"nothing migrated found in {dest}")
+    root = resolve_backup(args.drive)
     bad = 0
-    for label, path, source in targets:
-        res = verify(path, None if args.no_source else source, args.exclude)
+    for label, folder, source, state in _targets(root, Locations.default()):
+        res = verify(folder, None if args.no_source else source, args.exclude, state_dir=state)
         problems = len(res.mismatched) + len(res.missing_on_dest) + len(res.not_migrated)
         bad += problems
-        out.write(f"{label}: {res.ok:,} OK, {len(res.mismatched):,} corrupted, "
-                  f"{len(res.missing_on_dest):,} missing on SSD, {len(res.not_migrated):,} not yet migrated\n")
-        for tag, items in (("CORRUPTED", res.mismatched), ("MISSING", res.missing_on_dest),
-                           ("NOT MIGRATED", res.not_migrated)):
+        out.write(f"{'✓' if not problems else '✗'} {label}: {res.ok:,} OK, {len(res.mismatched):,} damaged, "
+                  f"{len(res.missing_on_dest):,} missing, {len(res.not_migrated):,} not copied yet\n")
+        for tag, items in (("damaged", res.mismatched), ("missing", res.missing_on_dest),
+                           ("not copied", res.not_migrated)):
             for rel in items[:20]:
                 out.write(f"    {tag}: {rel}\n")
     if bad:
-        out.write("\nRe-run `iground migrate` to repair: corrupted and missing files are copied again.\n")
+        out.write("\nRun iGround again to repair: damaged and missing files are copied again.\n")
     return 1 if bad else 0
 
 
 def cmd_status(args: argparse.Namespace, out: TextIO) -> int:
-    dest = Path(args.dest).expanduser()
-    targets = _targets(dest, Locations.default())
-    if not targets:
-        raise MigrationError(f"nothing migrated found in {dest}")
-    for label, path, _ in targets:
-        with mf.Manifest(path) as manifest:
+    root = resolve_backup(args.drive)
+    info = layout.read_info(root)
+    out.write(f"{root}\n  last updated: {info.get('updated', 'never')}"
+              f"{'  (complete)' if info.get('completed') and info.get('completed') == info.get('updated') else ''}\n")
+    for label, _, _, state in _targets(root, Locations.default()):
+        with mf.Manifest(state) as manifest:
             counts = manifest.counts()
-            photo_statuses = manifest.photo_statuses()
-            out.write(f"{label}\n")
-            if photo_statuses:
-                exported = sum(1 for s in photo_statuses.values() if s == mf.EXPORTED)
-                out.write(f"  {exported:,} items exported, {len(photo_statuses) - exported:,} failed\n")
-            for status in (mf.VERIFIED, mf.COPIED, mf.EVICTED, mf.FAILED):
-                if status in counts:
-                    c = counts[status]
-                    out.write(f"  {status:9} {c['files']:>8,} files  {human(c['bytes']):>10}\n")
+            photos = manifest.photo_statuses()
+            done = sum(counts.get(s, {}).get("files", 0) for s in mf.DONE_STATUSES)
+            size = sum(counts.get(s, {}).get("bytes", 0) for s in mf.DONE_STATUSES)
+            failed = counts.get(mf.FAILED, {}).get("files", 0)
+            if photos:
+                exported = sum(1 for s in photos.values() if s == mf.EXPORTED)
+                failed = len(photos) - exported
+                out.write(f"  {label:32} {exported:>8,} photos & videos  {human(size):>9}")
+            else:
+                out.write(f"  {label:32} {done:>8,} files            {human(size):>9}")
+            out.write(f"   {failed:,} failed\n" if failed else "\n")
             if args.failed:
                 for rec in manifest.records(mf.FAILED):
-                    out.write(f"    {rec.rel_path}: {rec.error}\n")
+                    out.write(f"      {rec.rel_path}: {rec.error}\n")
                 for pid, err in manifest.photo_errors():
-                    out.write(f"    photo {pid}: {err}\n")
+                    out.write(f"      photo {pid}: {err}\n")
     return 0
-
-
-# --- argument parsing --------------------------------------------------------
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="iground",
-        description="Move everything off iCloud onto an external SSD so you can downgrade your iCloud plan.",
+        description="Move everything from iCloud to an external SSD so you can downgrade your iCloud plan. "
+                    "Run with no arguments for the guided version.",
     )
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    sub = p.add_subparsers(dest="command", required=True)
+    sub = p.add_subparsers(dest="command")
     only_help = f"comma-separated subset of: {', '.join(ALL_KINDS)} (default: all)"
+    drive_help = "the SSD (e.g. /Volumes/MySSD) or a backup folder on it"
 
     def add_common(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("--only", metavar="KINDS", help=only_help)
         sp.add_argument("--exclude", action="append", default=list(DEFAULT_EXCLUDES), metavar="GLOB",
                         help="skip files/folders matching GLOB (repeatable)")
 
-    sp = sub.add_parser("audit", help="show what's in iCloud and what migrating it involves")
-    sp.add_argument("dest", nargs="?", help="optional SSD folder, to compare free space")
+    sp = sub.add_parser("backup", aliases=["migrate"], help="copy everything into a dated folder on the SSD")
+    sp.add_argument("drive", help=drive_help)
     add_common(sp)
-    sp.set_defaults(func=cmd_audit)
-
-    sp = sub.add_parser("migrate", help="copy iCloud Drive, app folders, Photos and Messages to the SSD")
-    sp.add_argument("dest", help="folder on the SSD, e.g. /Volumes/MySSD/iCloud")
-    add_common(sp)
-    sp.add_argument("--dry-run", action="store_true", help="list what would happen; change nothing")
-    sp.add_argument("--workers", type=int, default=4, help="parallel file downloads/copies (default 4)")
-    sp.add_argument("--no-verify", action="store_true", help="skip re-reading each copy to check its checksum")
+    sp.add_argument("--new", action="store_true",
+                    help="start a separate full backup instead of updating the latest one")
+    sp.add_argument("--dry-run", action="store_true", help="show what would be copied; change nothing")
+    sp.add_argument("--workers", type=int, default=4, help="parallel file copies (default 4)")
+    sp.add_argument("--no-verify", action="store_true", help="skip re-reading each copy to check it")
     sp.add_argument("--evict-after", action="store_true",
-                    help="after a verified copy, remove the iCloud Drive download from this Mac (stays in iCloud)")
+                    help="after copying, remove iCloud Drive downloads from this Mac (they stay in iCloud)")
     sp.add_argument("--download-timeout", type=float, default=1800, metavar="SECONDS",
                     help="max wait per file/photo for iCloud to download it (default 1800)")
-    sp.add_argument("--photos-batch", type=int, default=25, metavar="N",
-                    help="photos exported per Photos.app call (default 25)")
+    sp.add_argument("--photos-batch", type=int, default=25, metavar="N", help=argparse.SUPPRESS)
     sp.add_argument("--force", action="store_true", help="proceed even if the SSD looks too small")
     sp.add_argument("-v", "--verbose", action="store_true", help="log every file")
-    sp.set_defaults(func=cmd_migrate)
-
-    sp = sub.add_parser("iphone-backup",
-                        help="make Finder back up iPhones/iPads (incl. WhatsApp) to the SSD instead of iCloud")
-    sp.add_argument("dest", nargs="?", default="", help="the same SSD folder used for `migrate`")
-    sp.add_argument("--undo", action="store_true", help="point Finder back at the Mac's own backup folder")
-    sp.set_defaults(func=cmd_iphone_backup)
+    sp.set_defaults(func=cmd_backup)
 
     sp = sub.add_parser("ready", help="check whether it's safe to downgrade your iCloud storage")
-    sp.add_argument("dest")
+    sp.add_argument("drive", help=drive_help)
     sp.add_argument("--only", metavar="KINDS", help=only_help)
     sp.set_defaults(func=cmd_ready)
 
-    sp = sub.add_parser("verify", help="re-check every file on the SSD against its recorded checksum")
-    sp.add_argument("dest")
+    sp = sub.add_parser("iphone-backup", help="keep iPhone backups (incl. WhatsApp) on the SSD")
+    sp.add_argument("drive", nargs="?", default="", help=drive_help)
+    sp.add_argument("--undo", action="store_true", help="put iPhone backups back on the Mac")
+    sp.set_defaults(func=cmd_iphone_backup)
+
+    sp = sub.add_parser("audit", help="show what's in iCloud and how big it is")
+    sp.add_argument("drive", nargs="?", help="optional SSD, to compare free space")
+    add_common(sp)
+    sp.set_defaults(func=cmd_audit)
+
+    sp = sub.add_parser("verify", help="re-check every file in a backup against its checksum")
+    sp.add_argument("drive", help=drive_help)
     sp.add_argument("--exclude", action="append", default=list(DEFAULT_EXCLUDES), metavar="GLOB")
-    sp.add_argument("--no-source", action="store_true", help="don't look for files not yet migrated")
+    sp.add_argument("--no-source", action="store_true", help="don't look for files not yet copied")
     sp.set_defaults(func=cmd_verify)
 
-    sp = sub.add_parser("status", help="show migration progress recorded on the SSD")
-    sp.add_argument("dest")
-    sp.add_argument("--failed", action="store_true", help="list failed items with their errors")
+    sp = sub.add_parser("status", help="show what a backup contains")
+    sp.add_argument("drive", help=drive_help)
+    sp.add_argument("--failed", action="store_true", help="list items that failed, with reasons")
     sp.set_defaults(func=cmd_status)
     return p
 
@@ -395,15 +278,17 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[List[str]] = None, out: TextIO = sys.stdout) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command == "iphone-backup" and not args.undo and not args.dest:
-        parser.error("iphone-backup needs the SSD folder (or --undo)")
     try:
+        if args.command is None:
+            return Wizard(Console(out)).start()
+        if args.command == "iphone-backup" and not args.undo and not args.drive:
+            parser.error("iphone-backup needs the SSD (or --undo)")
         return args.func(args, out)
     except (MigrationError, PhotosError, ValueError) as exc:
-        sys.stderr.write(f"iground: error: {exc}\n")
+        sys.stderr.write(f"iground: {exc}\n")
         return 2
     except KeyboardInterrupt:
-        sys.stderr.write("\nInterrupted. Re-run the same command to resume where it stopped.\n")
+        sys.stderr.write("\nStopped. Run iGround again to carry on where it left off.\n")
         return 130
 
 

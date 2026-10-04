@@ -79,35 +79,67 @@ def relocate(loc: Locations, dest: Path) -> str:
     link = loc.mobilesync_backup
     target = ssd_backup_dir(dest).expanduser()
     if is_relocated(loc, dest):
-        return f"Already set up: Finder backs up to {target}"
+        return f"Already set up: your iPhone backs up to {target}"
     if link.is_symlink():
-        raise MigrationError(f"{link} already points to {os.readlink(link)}; run with --undo first")
+        current = os.readlink(link)
+        if not _is_ours(current):
+            raise MigrationError(f"{link} already points to {current}; run with --undo first")
+        _replace_link(link, target.resolve() if target.exists() else target)  # an older iGround backup
+        target.mkdir(parents=True, exist_ok=True)
+        return f"Your iPhone now backs up to {target}"
 
     target.mkdir(parents=True, exist_ok=True)
     moved = 0
     if link.is_dir() and any(link.iterdir()):
-        result = Migrator(link, target, Options(excludes=(".DS_Store",)), ICloudClient(brctl="")).run()
+        # Keep the bookkeeping out of the backup folder: Finder treats every sub-folder as a backup.
+        state = Path(dest).expanduser() / mf.MANIFEST_DIR / "iphone-import"
+        result = Migrator(link, target, Options(excludes=(".DS_Store",)), ICloudClient(brctl=""),
+                          state_dir=state).run()
+        shutil.rmtree(state, ignore_errors=True)
         if result.failed:
             raise MigrationError(
                 f"{result.failed} file(s) of the existing backups could not be copied; nothing was changed. "
                 f"First error: {result.errors[0][0]}: {result.errors[0][1]}"
             )
         moved = result.copied + result.skipped
-    # Finder treats every sub-folder as a backup, so don't leave the manifest there.
-    shutil.rmtree(target / mf.MANIFEST_DIR, ignore_errors=True)
 
     if link.exists():
         old = link.with_name(link.name + OLD_SUFFIX)
         if old.exists():
             old = link.with_name(f"{link.name}{OLD_SUFFIX}-{int(time.time())}")
         link.rename(old)
-        note = f"\nYour previous backups were copied ({moved} files) and the originals kept at {old} — " \
-               "delete that folder once Finder lists your backups, to free space on the Mac."
+        note = f"\nYour earlier backups were copied too ({moved} files). The originals are still at {old}; " \
+               "you can delete that folder to free space on the Mac."
     else:
         link.parent.mkdir(parents=True, exist_ok=True)
         note = ""
-    os.symlink(target, link)
-    return f"Finder will now back up iPhones/iPads to {target}{note}"
+    os.symlink(target.resolve(), link)
+    return f"Your iPhone/iPad now backs up to {target}{note}"
+
+
+def _is_ours(link_target: str) -> bool:
+    p = Path(link_target)
+    return p.name == BACKUPS_DIR and p.parent.name.startswith("iCloud Backup ")
+
+
+def _replace_link(link: Path, target: Path) -> None:
+    tmp = link.with_name(link.name + ".iground-tmp")
+    if tmp.is_symlink():
+        tmp.unlink()
+    os.symlink(target, tmp)
+    os.replace(tmp, link)
+
+
+def repoint(loc: Locations, old_root: Path, new_root: Path) -> bool:
+    """After a backup folder is renamed, keep Finder's backup link pointing into it."""
+    link = loc.mobilesync_backup
+    if not link.is_symlink():
+        return False
+    current = Path(os.readlink(link))
+    if current not in (Path(old_root) / BACKUPS_DIR, Path(old_root).resolve() / BACKUPS_DIR):
+        return False
+    _replace_link(link, Path(new_root).resolve() / BACKUPS_DIR)
+    return True
 
 
 def undo(loc: Locations) -> str:

@@ -100,7 +100,7 @@ class MigrateTests(Base):
         self.assertEqual(
             (self.dst / "a.txt").stat().st_mtime_ns, (self.src / "a.txt").stat().st_mtime_ns
         )
-        with mf.Manifest(self.dst) as m:
+        with mf.Manifest(mf.default_state_dir(self.dst)) as m:
             self.assertEqual(m.counts()[mf.VERIFIED]["files"], 4)
 
     def test_rerun_resumes_and_picks_up_changes(self):
@@ -126,7 +126,7 @@ class MigrateTests(Base):
         self.cloud.remote.clear()  # download will KeyError
         res = self.migrate()
         self.assertEqual((res.copied, res.failed), (3, 1))
-        with mf.Manifest(self.dst) as m:
+        with mf.Manifest(mf.default_state_dir(self.dst)) as m:
             self.assertEqual(m.get("Docs/remote.pdf").status, mf.FAILED)
         self.cloud.remote[self.remote_path] = self.remote_bytes
         res = self.migrate()
@@ -135,7 +135,7 @@ class MigrateTests(Base):
     def test_evict_after_only_after_verified_copy(self):
         res = self.migrate(evict_after=True)
         self.assertEqual(res.evicted, 4)
-        with mf.Manifest(self.dst) as m:
+        with mf.Manifest(mf.default_state_dir(self.dst)) as m:
             self.assertEqual(m.counts()[mf.EVICTED]["files"], 4)
         res = self.migrate(evict_after=True, verify=False)
         self.assertEqual(res.copied, 0)  # already done; nothing re-evicted

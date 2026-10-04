@@ -23,6 +23,10 @@ from .copier import hash_file
 
 STAGING = "staging"
 ALBUMS_FILE = "albums.json"
+ALBUMS_DIR = "Albums"
+FAVOURITES_DIR = "Favourites"
+MONTHS = ("January", "February", "March", "April", "May", "June", "July",
+          "August", "September", "October", "November", "December")
 # Stop before the SSD is completely full: exported sizes are unknown in advance.
 MIN_FREE_BYTES = 2 * 1024 ** 3
 
@@ -93,7 +97,7 @@ class PhotoItem:
         if self.taken_at is None:
             return "Unknown date"
         d = datetime.fromtimestamp(self.taken_at)
-        return f"{d:%Y}/{d:%m}"
+        return f"{d:%Y}/{d:%m} {MONTHS[d.month - 1]}"
 
 
 class PhotosClient:
@@ -170,7 +174,8 @@ class PhotosResult:
     files: int = 0
     bytes: int = 0
     errors: List[Tuple[str, str]] = field(default_factory=list)
-    albums_saved: bool = False
+    albums_saved: bool = False  # album list could be read from Photos
+    album_folders: bool = False  # Albums/ and Favourites/ folders were built
 
 
 # progress(event, item, detail): "exported" | "failed" | "planned" | "skipped"
@@ -202,8 +207,10 @@ class PhotosExporter:
         item_timeout: int = 1800,
         progress: Optional[PhotoProgress] = None,
         min_free: int = MIN_FREE_BYTES,
+        state_dir: Optional[Path] = None,
     ) -> None:
         self.dest = Path(dest)
+        self.state_dir = Path(state_dir) if state_dir else mf.default_state_dir(self.dest)
         self.client = client or PhotosClient()
         self.batch_size = max(1, batch_size)
         self.item_timeout = item_timeout
@@ -211,9 +218,9 @@ class PhotosExporter:
         self.min_free = min_free
 
     def pending(self, items: Sequence[PhotoItem]) -> List[PhotoItem]:
-        if not mf.Manifest.exists(self.dest):
+        if not mf.Manifest.exists(self.state_dir):
             return list(items)
-        with mf.Manifest(self.dest) as manifest:
+        with mf.Manifest(self.state_dir) as manifest:
             statuses = manifest.photo_statuses()
         return [it for it in items if statuses.get(it.id) != mf.EXPORTED]
 
@@ -228,8 +235,9 @@ class PhotosExporter:
             return result
 
         self.dest.mkdir(parents=True, exist_ok=True)
-        staging = self.dest / mf.MANIFEST_DIR / STAGING
-        with mf.Manifest(self.dest) as manifest:
+        # Staging lives on the SSD next to the photos so moving files into place is a rename.
+        staging = self.dest / f".{STAGING}-iground"
+        with mf.Manifest(self.state_dir) as manifest:
             manifest.set_meta("source", "Photos library")
             for start in range(0, len(todo), self.batch_size):
                 free = shutil.disk_usage(self.dest).free
@@ -238,7 +246,7 @@ class PhotosExporter:
                 batch = todo[start:start + self.batch_size]
                 self._export_batch(batch, staging, manifest, result)
             shutil.rmtree(staging, ignore_errors=True)
-            result.albums_saved = self._save_albums(items, manifest)
+            result.albums_saved, result.album_folders = self._save_albums(items, manifest)
         return result
 
     def _export_batch(self, batch: Sequence[PhotoItem], staging: Path,
@@ -282,26 +290,97 @@ class PhotosExporter:
             self.progress("exported", it, "")
             shutil.rmtree(folder, ignore_errors=True)
 
-    def _save_albums(self, items: Sequence[PhotoItem], manifest: mf.Manifest) -> bool:
-        """Write albums.json so album membership and favourites survive outside Photos."""
+    def _save_albums(self, items: Sequence[PhotoItem], manifest: mf.Manifest) -> Tuple[bool, bool]:
+        """Mirror albums and favourites as browsable folders, plus albums.json for the record.
+
+        The folders contain hard links: they look like ordinary photos in Finder but
+        take no extra space. Returns (album list read, folders built).
+        """
         files = manifest.photo_files()
         try:
             albums = self.client.albums()
         except Exception:
             albums = None
-        doc = {
-            "generated": datetime.now().isoformat(timespec="seconds"),
-            "favorites": sorted(f for it in items if it.favorite for f in files.get(it.id, [])),
-            "albums": [
-                {
-                    "name": a.get("name"),
-                    "folder": a.get("folder", []),
-                    "files": [f for pid in a.get("items", []) for f in files.get(pid, [])],
-                }
-                for a in (albums or [])
-            ],
-        }
-        tmp = self.dest / (ALBUMS_FILE + ".tmp")
+        album_docs = [
+            {
+                "name": a.get("name") or "Untitled",
+                "folder": a.get("folder", []),
+                "files": [f for pid in a.get("items", []) for f in files.get(pid, [])],
+            }
+            for a in (albums or [])
+        ]
+        favourites = sorted(f for it in items if it.favorite for f in files.get(it.id, []))
+        doc = {"generated": datetime.now().isoformat(timespec="seconds"),
+               "favourites": favourites, "albums": album_docs}
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        tmp = self.state_dir / (ALBUMS_FILE + ".tmp")
         tmp.write_text(json.dumps(doc, indent=2, ensure_ascii=False))
-        os.replace(tmp, self.dest / ALBUMS_FILE)
-        return albums is not None
+        os.replace(tmp, self.state_dir / ALBUMS_FILE)
+
+        wanted: Dict[Path, Path] = {}
+        for a in album_docs:
+            folder = self.dest / ALBUMS_DIR
+            for part in [*a["folder"], a["name"]]:
+                folder = folder / safe_name(part)
+            add_links(wanted, folder, [self.dest / f for f in a["files"]])
+        add_links(wanted, self.dest / FAVOURITES_DIR, [self.dest / f for f in favourites])
+        built = sync_links(wanted, [self.dest / ALBUMS_DIR, self.dest / FAVOURITES_DIR])
+        return albums is not None, built
+
+
+def safe_name(name: str) -> str:
+    name = str(name).replace("/", "-").replace(":", "-").strip().lstrip(".")
+    return name or "Untitled"
+
+
+def add_links(wanted: Dict[Path, Path], folder: Path, originals: Sequence[Path]) -> None:
+    """Plan one link per original inside `folder`, giving clashing names a ' (2)' suffix."""
+    used = set()
+    for original in originals:
+        name, n = original.name, 1
+        while name.lower() in used:
+            n += 1
+            name = f"{original.stem} ({n}){original.suffix}"
+        used.add(name.lower())
+        wanted[folder / name] = original
+
+
+def sync_links(wanted: Dict[Path, Path], roots: Sequence[Path]) -> bool:
+    """Make the hard links in `roots` match `wanted`. Files that aren't ours are left alone."""
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*"):
+            if path.is_file() and not path.is_symlink():
+                target = wanted.get(path)
+                keep = target is not None and target.exists() and os.path.samefile(path, target)
+                if not keep and path.stat().st_nlink > 1:
+                    path.unlink()  # a link we made earlier; the original photo is untouched
+        prune_empty_dirs(root)
+    for link, original in wanted.items():
+        if link.exists() or not original.exists():
+            continue
+        link.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.link(original, link)
+        except OSError:
+            # The SSD's format (e.g. exFAT) has no hard links: albums.json is the fallback.
+            for root in roots:
+                prune_empty_dirs(root)
+            return False
+    return True
+
+
+def prune_empty_dirs(root: Path) -> None:
+    if not root.is_dir():
+        return
+    for path in sorted(root.rglob("*"), reverse=True):
+        if path.is_dir():
+            try:
+                path.rmdir()
+            except OSError:
+                pass
+    try:
+        root.rmdir()
+    except OSError:
+        pass

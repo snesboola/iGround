@@ -13,9 +13,9 @@ PHOTOS = "photos"
 MESSAGES = "messages"
 ALL_KINDS = (DRIVE, APPS, PHOTOS, MESSAGES)
 
-# Folder names on the SSD.
+# Folder names inside a backup on the SSD.
 DRIVE_DIR = "iCloud Drive"
-APPS_DIR = "iCloud App Folders"
+APPS_DIR = "App Documents"
 PHOTOS_DIR = "Photos"
 MESSAGES_DIR = "Messages"
 BACKUPS_DIR = "iPhone Backups"
@@ -60,9 +60,19 @@ class FolderSource:
     def dest(self, root: Path) -> Path:
         return Path(root) / self.dest_rel
 
+    @property
+    def state_key(self) -> str:
+        """Name of this source's bookkeeping folder inside the backup's hidden state folder."""
+        return self.dest_rel.replace("/", "--")
+
 
 def friendly_container_name(name: str) -> str:
-    """'iCloud~com~example~App' -> 'com.example.App'; 'com~apple~Pages' -> 'com.apple.Pages'."""
+    """'com~apple~Pages' -> 'Pages'; 'iCloud~md~obsidian' -> 'obsidian'."""
+    return name.split("~")[-1] or name
+
+
+def full_container_name(name: str) -> str:
+    """'iCloud~com~example~App' -> 'com.example.App' (used when short names clash)."""
     if name.startswith("iCloud~"):
         name = name[len("iCloud~"):]
     return name.replace("~", ".")
@@ -93,9 +103,13 @@ def folder_sources(loc: Locations, kinds: Sequence[str] = ALL_KINDS) -> List[Fol
     if DRIVE in kinds and loc.drive.is_dir():
         out.append(FolderSource(DRIVE, "iCloud Drive", loc.drive, DRIVE_DIR, True))
     if APPS in kinds:
-        for c in app_containers(loc):
+        containers = app_containers(loc)
+        short = [friendly_container_name(c.name).lower() for c in containers]
+        for c in containers:
             name = friendly_container_name(c.name)
-            out.append(FolderSource(APPS, f"App folder {name}", c, f"{APPS_DIR}/{name}", True))
+            if short.count(name.lower()) > 1:
+                name = full_container_name(c.name)
+            out.append(FolderSource(APPS, f"{name} documents", c, f"{APPS_DIR}/{name}", True))
     if MESSAGES in kinds and loc.messages.is_dir():
         out.append(FolderSource(MESSAGES, "Messages", loc.messages, MESSAGES_DIR, False))
     return out
