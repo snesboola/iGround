@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "iground"
+version = "0.1.0"
+description = "Move your iCloud Drive onto an external SSD — safely, verifiably, resumably."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+classifiers = ["Operating System :: MacOS :: MacOS X", "Environment :: Console"]
+
+[project.scripts]
+iground = "iground.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
