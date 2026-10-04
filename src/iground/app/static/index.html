@@ -143,6 +143,13 @@
   .pick.off span { color: var(--muted); }
   .tick { width: 16px; height: 16px; margin: 0; accent-color: var(--ok); flex: none; cursor: pointer; }
   .picks .all { font-size: 12px; color: var(--muted); padding: 2px 0 4px; display: flex; gap: 12px; }
+  .tip { margin-top: 24px; display: flex; gap: 12px; padding: 14px 16px; border-radius: 12px;
+         background: var(--hover); font-size: 14px; }
+  .tip-icon { color: var(--muted); flex: none; padding-top: 1px; }
+  .tip b { font-weight: 600; }
+  .tip p { margin: 2px 0 10px; color: var(--muted); }
+  .tip .actions { gap: 14px; align-items: center; }
+  .tip .actions .link { font-size: 13px; color: var(--muted); }
   .total { margin-top: 14px; font-size: 13px; color: var(--muted); }
   .total b { color: var(--fg); font-weight: 600; }
 
@@ -164,6 +171,7 @@ const ORDER = ["photos", "drive", "apps", "messages", "iphone"];
 const LABELS = {photos: "Photos", drive: "iCloud Drive", apps: "App Documents", messages: "Messages", iphone: "iPhone & WhatsApp"};
 let S = null, offline = false, timer = null, lastHTML = "", lastSheet = "";
 const ui = {open: new Set(), drives: false, sheet: "", picks: new Set(), guide: false, notice: 0, pending: false};
+const tipSeen = () => !!(S && S.settings && S.settings.tip_seen);
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
@@ -275,7 +283,7 @@ function viewOffline() {
 }
 
 function view() {
-  return header() + drive() + hero() + list() + action() + resultBanner() + guide();
+  return header() + drive() + hero() + tip() + list() + action() + resultBanner() + guide();
 }
 
 function header() {
@@ -323,8 +331,7 @@ function hero() {
     const parts = [];
     if (o.photos) parts.push(plural(o.photos, "photo"));
     if (o.bytes) parts.push(`${size(o.bytes)} of files`);
-    lede = `${parts.length ? parts.join(" and ") + " will be" : "Nothing is chosen to be"} copied to ${esc(S.drive.name)}. ` +
-           `<a data-act="choose">${o.partial ? "Change what to copy" : "Choose what to copy"}</a>`;
+    lede = `${parts.length ? parts.join(" and ") + " will be" : "Nothing is chosen to be"} copied to ${esc(S.drive.name)}.`;
   } else if (o.ready) {
     title = o.partial ? "Everything you chose is on your SSD" : "Everything is on your SSD";
     lede = `Updated ${when(b.updated)}. ` +
@@ -336,6 +343,18 @@ function hero() {
            (b.updated ? ` Updated ${when(b.updated)}.` : "");
   }
   return `<h1>${title}</h1><p class="lede">${lede}</p>${bar}`;
+}
+
+const SLIDERS = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>';
+
+function tip() {
+  if (tipSeen() || !S.drive || !S.overview || active()) return "";
+  return `<div class="tip" role="note"><span class="tip-icon">${SLIDERS}</span><div>
+    <b>You choose what gets copied</b>
+    <p>You don't have to copy everything. Pick photo years, iCloud Drive folders and apps, or leave out Messages.
+      You'll also find this in ⚙ Settings.</p>
+    <div class="actions"><button class="chip solid" data-act="choose">Choose what to copy</button>
+      <button class="link" data-act="tipseen">Got it</button></div></div></div>`;
 }
 
 function rowState(sec) {
@@ -448,6 +467,7 @@ function action() {
       <button data-act="open" data-target="about">About</button></div>`;
   } else if (o) {
     out += `<p class="note">Nothing is deleted from iCloud. You can stop at any time.</p>`;
+    if (tipSeen()) out += `<div class="links"><button data-act="choose">Choose what to copy</button></div>`;
   }
   return out;
 }
@@ -565,6 +585,10 @@ document.addEventListener("click", (ev) => {
   switch (act) {
     case "sheet": ui.sheet = "settings"; break;
     case "close": ui.sheet = ""; break;
+    case "tipseen":
+      S.settings.tip_seen = true;  // hide it straight away; the server remembers it for next time
+      api("/api/settings", {tip_seen: true});
+      break;
     case "choose":
       ui.sheet = "choose";
       if (el.dataset.key) ui.picks.add(el.dataset.key);

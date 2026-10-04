@@ -216,6 +216,11 @@ class ChoiceTests(AppHome):
         self.assertEqual(st["settings"]["skip"]["years"], ["2021"])
         self.assertTrue(st["settings"]["evict"])
 
+    def test_tip_dismissal_is_remembered(self):
+        self.assertFalse(self.svc.state()["settings"]["tip_seen"])
+        self.svc.update_settings(tip_seen=True)
+        self.assertTrue(Service(self.loc, self.volumes, self.photos).state()["settings"]["tip_seen"])
+
     def test_bad_choices_rejected(self):
         with self.assertRaises(ServiceError):
             self.svc.update_settings(kinds=["whatsapp"])

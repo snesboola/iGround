@@ -169,6 +169,7 @@ class Service:
         saved = selection.load(self.loc.config_file)
         self.selection = Selection.from_dict(saved.get("selection", {}))
         self.evict = bool(saved.get("evict", False))
+        self.tip_seen = bool(saved.get("tip_seen", False))
         self.job: Optional[Job] = None
         self.overview: Optional[Dict[str, Any]] = None
         self.overview_key: Optional[str] = None
@@ -201,7 +202,7 @@ class Service:
                 "overview": overview,
                 "loading": self.refreshing or overview is None,
                 "job": self.job.snapshot() if self.job else None,
-                "settings": {**self.selection.to_dict(), "evict": self.evict},
+                "settings": {**self.selection.to_dict(), "evict": self.evict, "tip_seen": self.tip_seen},
                 "notice": self.notice,
             }
 
@@ -446,8 +447,13 @@ class Service:
             self.refresh()
 
     def update_settings(self, kinds: Optional[List[str]] = None, evict: Optional[bool] = None,
-                        skip: Optional[Dict[str, List[str]]] = None) -> None:
+                        skip: Optional[Dict[str, List[str]]] = None, tip_seen: Optional[bool] = None) -> None:
         with self.lock:
+            if tip_seen is not None:
+                self.tip_seen = bool(tip_seen)
+                if kinds is None and skip is None and evict is None:  # allowed even while copying
+                    self._save_settings()
+                    return
             self._require_idle()
             self._ensure_drive()
             sel = Selection.from_dict(self.selection.to_dict())
@@ -467,11 +473,15 @@ class Service:
             self.selection = sel
             if evict is not None:
                 self.evict = bool(evict)
-            try:
-                selection.save(self.loc.config_file, {"selection": sel.to_dict(), "evict": self.evict})
-            except OSError:
-                pass  # choices still apply for this session
+            self._save_settings()
             self.refresh()
+
+    def _save_settings(self) -> None:
+        try:
+            selection.save(self.loc.config_file, {"selection": self.selection.to_dict(), "evict": self.evict,
+                                                  "tip_seen": self.tip_seen})
+        except OSError:
+            pass  # choices still apply for this session
 
     def start_backup(self, new: bool = False) -> None:
         with self.lock:
