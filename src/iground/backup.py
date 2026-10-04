@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import socket
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -34,6 +35,7 @@ class BackupOptions:
     download_timeout: float = 1800
     photos_batch: int = 25
     excludes: Sequence[str] = DEFAULT_EXCLUDES
+    cancel: Optional[threading.Event] = None
 
 
 @dataclass
@@ -49,7 +51,7 @@ class SectionResult:
 class Reporter:
     """How a backup run talks to the user. The CLI and the wizard both subclass this."""
 
-    def section(self, label: str, index: int, total: int, items: int, size: int) -> Callable:
+    def section(self, label: str, index: int, total: int, items: int, size: int, kind: str = "") -> Callable:
         """A section is starting; return the progress callback for it."""
         return lambda *_: None
 
@@ -87,19 +89,24 @@ def run_backup(
     results: List[SectionResult] = []
     index = 0
 
+    stopped = lambda: opts.cancel is not None and opts.cancel.is_set()
+
     if PHOTOS in opts.kinds:
         index += 1
         results.append(_photos(root, opts, reporter, index, total, photos_client or PhotosClient()))
 
     for src in folders:
+        if stopped():
+            break
         index += 1
         target = src.dest(root)
         pre = summarize(src.path, opts.excludes)
-        progress = reporter.section(src.label, index, total, pre.files + pre.symlinks, pre.total_bytes)
+        progress = reporter.section(src.label, index, total, pre.files + pre.symlinks, pre.total_bytes,
+                                    kind=src.kind)
         options = Options(
             workers=opts.workers, verify=opts.verify, evict_after=opts.evict_after and src.icloud_managed,
             dry_run=opts.dry_run, force=opts.force, download_timeout=opts.download_timeout,
-            excludes=opts.excludes,
+            excludes=opts.excludes, cancel=opts.cancel,
         )
         try:
             res = Migrator(src.path, target, options, make_icloud(src.icloud_managed), progress,
@@ -116,12 +123,15 @@ def run_backup(
                 text = f"{plural(done, 'file')} ({_size(res.planned.total_bytes)})"
                 if res.failed:
                     text += f", {res.failed:,} could not be copied"
-            result = SectionResult(src.kind, src.label, target, res.failed == 0, text, res.errors)
+                if res.cancelled:
+                    text = f"stopped — {plural(res.cancelled, 'file')} still to copy"
+            result = SectionResult(src.kind, src.label, target, res.failed == 0 and not res.cancelled,
+                                   text, res.errors)
         reporter.section_done(result)
         results.append(result)
 
     if not opts.dry_run:
-        complete = all(r.ok for r in results) and set(opts.kinds) == set(ALL_KINDS)
+        complete = all(r.ok for r in results) and set(opts.kinds) == set(ALL_KINDS) and not stopped()
         now = datetime.now().isoformat(timespec="seconds")
         changes = {"updated": now, "host": socket.gethostname()}
         if complete:
@@ -135,22 +145,22 @@ def _photos(root: Path, opts: BackupOptions, reporter: Reporter, index: int, tot
             client: PhotosClient) -> SectionResult:
     target = root / PHOTOS_DIR
     if not client.available:
-        reporter.section("Photos", index, total, 0, 0)
+        reporter.section("Photos", index, total, 0, 0, kind=PHOTOS)
         result = SectionResult(PHOTOS, "Photos", target, False, "skipped: needs a Mac with the Photos app")
         reporter.section_done(result)
         return result
     try:
         items = client.list_items()
     except PhotosError as exc:
-        reporter.section("Photos", index, total, 0, 0)
+        reporter.section("Photos", index, total, 0, 0, kind=PHOTOS)
         result = SectionResult(PHOTOS, "Photos", target, False, f"could not open your Photos library: {exc}")
         reporter.section_done(result)
         return result
 
-    progress = reporter.section("Photos", index, total, len(items), 0)
+    progress = reporter.section("Photos", index, total, len(items), 0, kind=PHOTOS)
     exporter = PhotosExporter(target, _Fixed(client, items), batch_size=opts.photos_batch,
                               item_timeout=int(opts.download_timeout), progress=progress,
-                              state_dir=layout.state_dir(root, PHOTOS_STATE))
+                              state_dir=layout.state_dir(root, PHOTOS_STATE), cancel=opts.cancel)
     try:
         res = exporter.run(dry_run=opts.dry_run)
     except PhotosError as exc:
@@ -164,7 +174,9 @@ def _photos(root: Path, opts: BackupOptions, reporter: Reporter, index: int, tot
                 text += f", {res.failed:,} could not be copied"
             if not res.album_folders and res.total:
                 text += " (albums are listed in .iground/Photos/albums.json; this SSD can't hold album folders)"
-        result = SectionResult(PHOTOS, "Photos", target, res.failed == 0, text, res.errors)
+            if res.cancelled:
+                text = f"stopped — {res.total - res.skipped - res.exported - res.failed:,} still to copy"
+        result = SectionResult(PHOTOS, "Photos", target, res.failed == 0 and not res.cancelled, text, res.errors)
     reporter.section_done(result)
     return result
 
@@ -260,3 +272,28 @@ def write_about(loc: Locations, root: Path) -> Path:
     path = root / layout.ABOUT_FILE
     path.write_text("\n".join(lines), encoding="utf-8")
     return path
+
+
+def backup_sections(root: Path, loc: Locations):
+    """(label, folder on SSD, source folder or None, state dir, kind) for each section stored in a backup."""
+    sources = {src.state_key: src for src in folder_sources(loc)}
+    state_root = Path(root) / layout.STATE_DIR
+    found = []
+    if state_root.is_dir():
+        for state in sorted(state_root.iterdir()):
+            if not mf.Manifest.exists(state):
+                continue
+            src = sources.get(state.name)
+            rel = state.name.replace("--", "/")
+            if src is not None:
+                kind = src.kind
+            elif state.name == PHOTOS_STATE:
+                kind = PHOTOS
+            elif rel.startswith(APPS_DIR + "/"):
+                kind = APPS
+            elif rel == DRIVE_DIR:
+                kind = DRIVE
+            else:
+                kind = MESSAGES
+            found.append((src.label if src else rel, Path(root) / rel, src.path if src else None, state, kind))
+    return found

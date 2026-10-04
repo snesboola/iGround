@@ -69,7 +69,7 @@ def build_report(
     migrate_cmd = "Run iGround again to copy what's missing"
 
     if PHOTOS in kinds:
-        report.checks.append(_photos_check(layout.state_dir(dest, "Photos"), photos_client or PhotosClient(),
+        report.checks.append(photos_check(layout.state_dir(dest, "Photos"), photos_client or PhotosClient(),
                                            migrate_cmd))
 
     for src in folder_sources(loc, kinds):
@@ -84,12 +84,12 @@ def build_report(
                 parts.append(f"{_plural(len(diff.changed), 'file')} changed since they were copied")
             report.checks.append(Check(src.label, MISSING, "; ".join(parts), migrate_cmd))
 
-    report.checks.append(_backup_check(loc, dest))
+    report.checks.append(backup_check(loc, dest))
     report.checks.extend(MANUAL_STEPS)
     return report
 
 
-def _photos_check(state: Path, client: PhotosClient, migrate_cmd: str) -> Check:
+def photos_check(state: Path, client: PhotosClient, migrate_cmd: str) -> Check:
     if not client.available:
         return Check("Photos", MISSING, "cannot read the Photos library (macOS + Photos.app required)")
     try:
@@ -107,7 +107,7 @@ def _photos_check(state: Path, client: PhotosClient, migrate_cmd: str) -> Check:
                  migrate_cmd)
 
 
-def _backup_check(loc: Locations, dest: Path) -> Check:
+def backup_check(loc: Locations, dest: Path) -> Check:
     name = "iPhone backup (incl. WhatsApp)"
     setup = "Connect your iPhone, open Finder, select it and click 'Back Up Now'"
     backups = devicebackup.list_backups(devicebackup.ssd_backup_dir(dest))

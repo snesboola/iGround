@@ -30,40 +30,39 @@ Nothing is ever deleted from iCloud. iGround copies, checks every file, and tell
 1. **Download iGround**: the green **Code** button on GitHub → *Download ZIP*, then open the ZIP.
 2. **Plug in your SSD.**
 3. **Double-click `iGround.command`.** The first time, macOS may say it's from an unidentified developer. If so, right-click the file → **Open** → **Open**.
-4. Answer a few questions:
+
+The iGround window opens:
 
 ```
-Step 1 of 4 · Choose your SSD
-   Use “MySSD” (1.8 TB free)? [Y/n]
+ iGround                                              ⚙
+ ▭ Samsung T7 · 1.8 TB free
 
-Step 2 of 4 · What's in your iCloud
-   • Photos           48,310 photos & videos
-   • iCloud Drive     12,408 files, 120.4 GB
-   • Messages         3,112 files, 3.4 GB
-   • App documents    1.2 GB
-   Everything goes into a new folder: “iCloud Backup 2026-10-04”.
-   Start now? [Y/n]
+ Ready to copy your iCloud
+ 48,310 photos and 140 GB of files will be copied to Samsung T7.
 
-Step 3 of 4 · Copying to “iCloud Backup 2026-10-04”
-  [1/5] Photos
-      ███████████░░░░░░░░░░░░░  46%  22,410/48,310  about 3h 10m left
+ ○  Photos                         48,310 photos & videos  ›
+ ○  iCloud Drive                   12,408 files · 120 GB   ›
+ ○  App Documents                  37 files · 1.2 GB       ›
+ ○  Messages                       3,112 files · 3.4 GB    ›
+ ○  iPhone & WhatsApp              Not set up              ›
 
-Step 4 of 4 · iPhone & WhatsApp
-   Save your iPhone backups on this SSD from now on? [Y/n]
-
-Result
-   ✓ Photos: all 48,310 photos & videos copied
-   ✓ iCloud Drive: 12,408 files copied
-   ✗ iPhone backup (incl. WhatsApp): no iPhone backup on the SSD yet
-       → Connect your iPhone, open Finder, select it and click 'Back Up Now'
+ [                 Copy to Samsung T7                 ]
+       Nothing is deleted from iCloud. You can stop at any time.
 ```
 
-5. **Back up your iPhone** to the SSD in Finder, as iGround describes. Then **double-click iGround again**. When every line shows ✓, open `About this backup.txt` for the steps to free up iCloud space and downgrade.
+- **One button.** Click **Copy to …**. Each row shows its own progress, and the title shows how far along you are and roughly how long is left. You can **Stop** at any time and continue later.
+- **Every row tells you where it stands**: ✓ when it's safely on the SSD, or what's still missing. Click a row for more detail, to show it in Finder, or to see anything that couldn't be copied.
+- **iPhone & WhatsApp**: click the row → **Set up**, then back up your iPhone in Finder as the row describes, then click **Check again**.
+- When every row shows ✓, the title changes to **"Everything is on your SSD"**. Click **How?** for the steps to free up iCloud and downgrade.
+- **Update backup** copies only what's new or changed since last time. **Check files** re-reads every file on the SSD to make sure nothing is damaged.
+- **⚙ Settings**: choose what to back up, free up space on the Mac as files are copied, start a separate backup, or move iPhone backups back to the Mac.
+
+The Terminal window that opens alongside keeps iGround running. Close it when you're done. The app follows your Mac's light or dark mode. If Google Chrome is installed, iGround opens in its own clean window; otherwise it opens in your default browser.
 
 **Good to know**
-- The first run can take hours, because every photo is downloaded in full quality. The Mac is kept awake while it works. You can close the window at any time; the next run picks up where it stopped.
-- Run iGround whenever you like to bring the backup up to date. Only new and changed items are copied, and the folder is renamed to that day's date, so its name always shows when it was last updated.
-- macOS asks for two permissions the first time: allowing Terminal to **control Photos** (click OK), and **Full Disk Access** for Terminal (iGround opens the right settings page). The second is needed for Messages and iPhone backups.
+- The first run can take hours, because every photo is downloaded in full quality. The Mac is kept awake while it works.
+- Each update renames the backup folder to that day's date, so its name always shows when it was last updated.
+- macOS asks for two permissions: allowing Terminal to **control Photos** (click OK), and **Full Disk Access** for Terminal, which is needed for Messages and iPhone backups. If either is missing, its row says so and has a button that opens the right settings page.
 - If your Mac doesn't have Python yet, double-clicking iGround offers to install it (Apple's free *Command Line Developer Tools*). Then double-click again.
 
 ## Why WhatsApp works this way
@@ -79,7 +78,8 @@ Format the SSD as **APFS** (Disk Utility) if you can. On an exFAT drive, everyth
 ## For power users
 
 ```sh
-iground                         # the guided flow (same as double-clicking)
+iground                         # open the app (same as double-clicking)
+iground guided                  # the same journey as questions in the terminal
 iground backup /Volumes/MySSD   # non-interactive; --only photos,drive,apps,messages  --new  --dry-run  --evict-after
 iground ready  /Volumes/MySSD   # safe to downgrade? exit code 0 = yes
 iground iphone-backup /Volumes/MySSD   [--undo]
@@ -97,5 +97,7 @@ Each backup keeps its bookkeeping (a checksum for every file, progress, album li
 ```sh
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
+
+The app is a small local web page (`src/iground/app/`): `service.py` holds all state and actions, and `server.py` serves it on 127.0.0.1 behind a random per-launch token. There are no extra dependencies.
 
 Everything macOS-specific sits behind small classes: `ICloudClient` (`brctl`), `PhotosClient` (`osascript`), `Locations` (home-folder paths; override with `IGROUND_HOME`) and the wizard's injected runners. That's why the tests run on Linux.

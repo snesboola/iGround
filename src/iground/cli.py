@@ -1,6 +1,7 @@
 """Command line.
 
-    iground                      guided backup (the easy way — same as double-clicking iGround.command)
+    iground                      open the iGround app (same as double-clicking iGround.command)
+    iground guided               the same journey as questions in the terminal
 
     iground backup  DRIVE        copy everything into DRIVE/iCloud Backup YYYY-MM-DD
     iground ready   DRIVE        is it safe to downgrade iCloud storage?
@@ -22,7 +23,7 @@ from typing import List, Optional, TextIO
 
 from . import __version__, devicebackup, layout, readiness
 from . import manifest as mf
-from .backup import BackupOptions, Reporter, SectionResult, prepare, run_backup, summarize
+from .backup import BackupOptions, Reporter, SectionResult, backup_sections, prepare, run_backup, summarize
 from .migrate import MigrationError, verify
 from .photos import PhotosClient, PhotosError
 from .scanner import DEFAULT_EXCLUDES
@@ -36,7 +37,7 @@ class CLIReporter(Reporter):
         self.out, self.verbose = out, verbose
         self.printer: Optional[ProgressPrinter] = None
 
-    def section(self, label, index, total, items, size):
+    def section(self, label, index, total, items, size, kind=""):
         self.out.write(f"\n[{index}/{total}] {label}\n")
         self.printer = ProgressPrinter(items, size, verbose=self.verbose)
         return self.printer
@@ -153,26 +154,10 @@ def cmd_ready(args: argparse.Namespace, out: TextIO) -> int:
     return 1
 
 
-def _targets(root: Path, loc: Locations):
-    """(label, folder on SSD, source folder or None, state dir) for each section of a backup."""
-    sources = {src.state_key: src for src in folder_sources(loc)}
-    state_root = root / layout.STATE_DIR
-    found = []
-    if state_root.is_dir():
-        for state in sorted(state_root.iterdir()):
-            if not mf.Manifest.exists(state):
-                continue
-            src = sources.get(state.name)
-            folder = root / state.name.replace("--", "/")
-            found.append((src.label if src else state.name.replace("--", "/"), folder,
-                          src.path if src else None, state))
-    return found
-
-
 def cmd_verify(args: argparse.Namespace, out: TextIO) -> int:
     root = resolve_backup(args.drive)
     bad = 0
-    for label, folder, source, state in _targets(root, Locations.default()):
+    for label, folder, source, state, _ in backup_sections(root, Locations.default()):
         res = verify(folder, None if args.no_source else source, args.exclude, state_dir=state)
         problems = len(res.mismatched) + len(res.missing_on_dest) + len(res.not_migrated)
         bad += problems
@@ -192,7 +177,7 @@ def cmd_status(args: argparse.Namespace, out: TextIO) -> int:
     info = layout.read_info(root)
     out.write(f"{root}\n  last updated: {info.get('updated', 'never')}"
               f"{'  (complete)' if info.get('completed') and info.get('completed') == info.get('updated') else ''}\n")
-    for label, _, _, state in _targets(root, Locations.default()):
+    for label, _, _, state, _ in backup_sections(root, Locations.default()):
         with mf.Manifest(state) as manifest:
             counts = manifest.counts()
             photos = manifest.photo_statuses()
@@ -214,6 +199,13 @@ def cmd_status(args: argparse.Namespace, out: TextIO) -> int:
     return 0
 
 
+def cmd_app(args: argparse.Namespace, out: TextIO) -> int:
+    from .app.server import serve
+
+    serve(port=args.port, open_browser=not args.no_browser)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="iground",
@@ -222,6 +214,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="command")
+
+    sp = sub.add_parser("app", help="open the iGround app window (the default)")
+    sp.add_argument("--port", type=int, default=0, help=argparse.SUPPRESS)
+    sp.add_argument("--no-browser", action="store_true", help="don't open a browser window")
+    sp.set_defaults(func=cmd_app)
+
+    sp = sub.add_parser("guided", help="step-by-step backup with questions in the terminal")
+    sp.set_defaults(func=lambda args, out: Wizard(Console(out)).start())
     only_help = f"comma-separated subset of: {', '.join(ALL_KINDS)} (default: all)"
     drive_help = "the SSD (e.g. /Volumes/MySSD) or a backup folder on it"
 
@@ -280,7 +280,7 @@ def main(argv: Optional[List[str]] = None, out: TextIO = sys.stdout) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command is None:
-            return Wizard(Console(out)).start()
+            args = parser.parse_args(["app"])
         if args.command == "iphone-backup" and not args.undo and not args.drive:
             parser.error("iphone-backup needs the SSD (or --undo)")
         return args.func(args, out)

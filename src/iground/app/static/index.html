@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>iGround</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='3' y='9' width='26' height='14' rx='4' fill='%231d1d1f'/%3E%3Ccircle cx='23' cy='16' r='1.6' fill='%23fff'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #fbfbfa; --fg: #1d1d1f; --muted: #86868b; --faint: #c7c7cc; --line: #ececec;
+    --card: #ffffff; --hover: #f4f4f2; --ok: #1f9d55; --warn: #c27c0e; --bad: #d63b30;
+    --btn: #1d1d1f; --btn-fg: #ffffff; --track: #ececec; --shadow: 0 10px 40px rgba(0,0,0,.08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161616; --fg: #f5f5f7; --muted: #8e8e93; --faint: #48484a; --line: #262626;
+      --card: #1e1e1e; --hover: #222; --ok: #32d74b; --warn: #ffb340; --bad: #ff6961;
+      --btn: #f5f5f7; --btn-fg: #161616; --track: #2c2c2c; --shadow: 0 10px 40px rgba(0,0,0,.5);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); }
+  body {
+    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums;
+  }
+  button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; border-radius: 6px; }
+  .wrap { max-width: 520px; margin: 0 auto; padding: 28px 24px 48px; }
+
+  header { display: flex; align-items: center; justify-content: space-between; height: 32px; }
+  .brand { font-weight: 600; letter-spacing: -.01em; }
+  .icon { width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; color: var(--muted); }
+  .icon:hover { background: var(--hover); color: var(--fg); }
+
+  .drive { margin-top: 36px; display: inline-flex; gap: 6px; align-items: center; color: var(--muted);
+           font-size: 13px; padding: 4px 8px; margin-left: -8px; border-radius: 8px; }
+  .drive:hover { background: var(--hover); color: var(--fg); }
+  .drives { margin: 6px 0 0 -8px; padding: 6px; background: var(--card); border-radius: 12px;
+            box-shadow: var(--shadow); max-width: 320px; }
+  .drives button { display: flex; width: 100%; justify-content: space-between; gap: 16px; padding: 8px 10px;
+                   border-radius: 8px; text-align: left; }
+  .drives button:hover, .drives button.on { background: var(--hover); }
+  .drives small { color: var(--muted); }
+  .drives .hint { color: var(--muted); font-size: 12px; padding: 6px 10px 4px; }
+
+  h1 { font-size: 26px; line-height: 1.2; font-weight: 600; letter-spacing: -.02em; margin: 10px 0 6px; }
+  .lede { color: var(--muted); margin: 0; }
+  .lede a, .link { color: var(--fg); text-decoration: underline; text-decoration-color: var(--faint);
+                   text-underline-offset: 3px; cursor: pointer; }
+  .bar { height: 3px; background: var(--track); border-radius: 3px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--fg); border-radius: 3px; transition: width .6s ease; }
+  .hero-bar { margin-top: 20px; }
+
+  .list { margin-top: 32px; border-top: 1px solid var(--line); }
+  .row { border-bottom: 1px solid var(--line); }
+  .row-main { display: grid; grid-template-columns: 22px 1fr auto 14px; gap: 12px; align-items: center;
+              width: 100%; padding: 14px 0 0; text-align: left; }
+  .row-main .label { font-weight: 500; }
+  .row-main .meta { color: var(--muted); font-size: 14px; text-align: right; white-space: nowrap;
+                    overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+  .chev { color: var(--faint); transition: transform .2s; }
+  .row.open .chev { transform: rotate(90deg); }
+  .sub { margin: 2px 0 0 34px; padding-bottom: 14px; color: var(--muted); font-size: 13px;
+         white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sub.todo { color: var(--fg); }
+  .sub.error { color: var(--warn); }
+  .row .bar { margin: -6px 0 16px 34px; }
+  .more { margin: -4px 0 16px 34px; font-size: 14px; color: var(--muted); }
+  .more p { margin: 0 0 10px; }
+  .more ol { margin: 0 0 12px; padding-left: 18px; color: var(--fg); }
+  .more li { margin: 3px 0; }
+  .more .errs { margin: 0 0 12px; padding: 0; list-style: none; font-size: 12px; }
+  .more .errs li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .more .errs b { font-weight: 500; color: var(--fg); }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip { font-size: 13px; padding: 6px 12px; border-radius: 999px; background: var(--hover); color: var(--fg); }
+  .chip:hover { filter: brightness(.96); }
+  .chip.solid { background: var(--btn); color: var(--btn-fg); }
+
+  .mark { width: 22px; height: 22px; display: grid; place-items: center; }
+  .mark.done { color: var(--ok); }
+  .mark.todo, .mark.off, .mark.empty { color: var(--faint); }
+  .mark.error { color: var(--warn); }
+  .mark.running svg { animation: spin 1s linear infinite; color: var(--fg); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .skeleton { display: inline-block; height: 10px; width: 120px; border-radius: 5px; background: var(--track);
+              animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .45; } }
+
+  .primary { margin-top: 28px; width: 100%; height: 48px; border-radius: 12px; background: var(--btn);
+             color: var(--btn-fg); font-weight: 600; transition: transform .08s, opacity .2s; }
+  .primary:active { transform: scale(.99); }
+  .primary:disabled { opacity: .35; cursor: default; }
+  .primary.quiet { background: var(--hover); color: var(--fg); }
+  .links { display: flex; gap: 18px; justify-content: center; margin-top: 16px; font-size: 13px; }
+  .links button { color: var(--muted); }
+  .links button:hover { color: var(--fg); }
+  .note { margin-top: 14px; font-size: 13px; color: var(--muted); text-align: center; }
+  .note.warn { color: var(--warn); }
+  .result { margin-top: 24px; display: flex; gap: 10px; align-items: flex-start; font-size: 14px;
+            padding: 12px 14px; border-radius: 12px; background: var(--hover); }
+  .result span { flex: 1; }
+  .result button { color: var(--muted); }
+  .guide { margin-top: 20px; padding: 16px 18px; border-radius: 12px; background: var(--hover); font-size: 14px; }
+  .guide ol { margin: 8px 0 0; padding-left: 18px; }
+  .guide li { margin: 6px 0; }
+  .guide .caution { color: var(--warn); }
+
+  .scrim { position: fixed; inset: 0; background: rgba(0,0,0,.25); display: flex; justify-content: center;
+           align-items: flex-start; padding: 48px 16px; z-index: 10; }
+  .sheet { width: 100%; max-width: 440px; background: var(--card); border-radius: 16px; box-shadow: var(--shadow);
+           padding: 20px 22px 18px; }
+  .sheet-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+  .sheet-head h2 { font-size: 17px; margin: 0; }
+  .sheet h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+              font-weight: 600; margin: 18px 0 4px; }
+  .opt { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 9px 0;
+         border-bottom: 1px solid var(--line); }
+  .opt:last-child { border-bottom: 0; }
+  .opt small { display: block; color: var(--muted); font-size: 12px; }
+  .switch { appearance: none; width: 38px; height: 22px; border-radius: 11px; background: var(--track);
+            position: relative; cursor: pointer; flex: none; transition: background .2s; margin: 0; }
+  .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px;
+                   border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.2); transition: left .2s; }
+  .switch:checked { background: var(--ok); }
+  .switch:checked::after { left: 18px; }
+  .foot { margin-top: 16px; font-size: 12px; color: var(--muted); }
+
+  .toast { position: fixed; left: 50%; top: 16px; transform: translate(-50%, -12px); opacity: 0;
+           background: var(--btn); color: var(--btn-fg); padding: 10px 16px; border-radius: 10px; font-size: 14px;
+           transition: all .25s; pointer-events: none; max-width: 90vw; z-index: 20; }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap" id="app"></div>
+<div id="sheet"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script>
+"use strict";
+const TOKEN = "__TOKEN__";
+const ORDER = ["photos", "drive", "apps", "messages", "iphone"];
+const LABELS = {photos: "Photos", drive: "iCloud Drive", apps: "App Documents", messages: "Messages", iphone: "iPhone & WhatsApp"};
+let S = null, offline = false, timer = null, lastHTML = "", lastSheet = "";
+const ui = {open: new Set(), drives: false, sheet: false, guide: false, notice: 0, pending: false};
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const plural = (n, w) => `${n.toLocaleString()} ${w}${n === 1 ? "" : "s"}`;
+
+function size(n) {
+  const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0;
+  while (n >= 1000 && i < u.length - 1) { n /= 1000; i++; }
+  return i === 0 ? `${n} B` : `${n.toFixed(n < 10 ? 1 : 0)} ${u[i]}`;
+}
+function duration(s) {
+  if (s == null) return "";
+  if (s < 60) return "less than a minute";
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60), r = m % 60;
+  return r ? `${h} h ${r} min` : `${h} h`;
+}
+function when(iso) {
+  if (!iso) return "";
+  const d = new Date(iso), now = new Date();
+  const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = Math.round((day(now) - day(d)) / 86400000);
+  if (diff === 0) return "today";
+  if (diff === 1) return "yesterday";
+  return d.toLocaleDateString(undefined, {day: "numeric", month: "short", year: d.getFullYear() === now.getFullYear() ? undefined : "numeric"});
+}
+
+const ICON = {
+  done: '<svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="9" fill="currentColor"/><path d="M6 10.3l2.6 2.5L14 7.4" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  todo: '<svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8.25" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>',
+  error: '<svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="9" fill="currentColor"/><path d="M10 5.5v5.2" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/><circle cx="10" cy="14" r="1.1" fill="#fff"/></svg>',
+  off: '<svg width="20" height="20" viewBox="0 0 20 20"><path d="M6 10h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+  running: '<svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" stroke-opacity=".15" stroke-width="2"/><path d="M10 2a8 8 0 0 1 8 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+};
+ICON.empty = ICON.off;
+const CHEV = '<svg width="14" height="14" viewBox="0 0 14 14"><path d="M5 3l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const GEAR = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>';
+const DISK = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="4" width="12" height="8" rx="2"/><circle cx="11" cy="8" r=".8" fill="currentColor"/></svg>';
+
+// ---- talking to iGround -----------------------------------------------------
+
+async function api(path, body) {
+  ui.pending = true;
+  try {
+    const res = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json", "X-IGround-Token": TOKEN},
+                                   body: JSON.stringify(body || {})});
+    const data = await res.json();
+    if (!res.ok) { toast(data.error || "That didn't work."); return; }
+    S = data; offline = false;
+  } catch (e) { offline = true; }
+  finally { ui.pending = false; render(); schedule(300); }
+}
+
+async function poll() {
+  try {
+    const res = await fetch("/api/state", {headers: {"X-IGround-Token": TOKEN}, cache: "no-store"});
+    if (!res.ok) throw new Error();
+    S = await res.json(); offline = false;
+  } catch (e) { offline = true; }
+  render();
+  schedule(offline ? 3000 : (S && S.job && S.job.state !== "done" && S.job.state !== "stopped" && S.job.state !== "failed") ? 700 : 1500);
+}
+function schedule(ms) { clearTimeout(timer); timer = setTimeout(poll, ms); }
+
+function toast(text) {
+  const t = $("toast"); t.textContent = text; t.classList.add("show");
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 3000);
+}
+
+// ---- state helpers ----------------------------------------------------------
+
+const job = () => S && S.job;
+const active = () => { const j = job(); return j && (j.state === "running" || j.state === "stopping"); };
+const sections = () => (S && S.overview && S.overview.sections) || [];
+function planned() {
+  const kinds = (S && S.settings.kinds) || [];
+  return sections().filter((s) => s.key !== "iphone" && kinds.includes(s.key) && s.status !== "empty");
+}
+function jobProgress() {
+  const j = job(); if (!j) return 0;
+  const keys = j.kind === "verify" ? Object.keys(j.sections) : planned().map((s) => s.key);
+  if (!keys.length) return 0;
+  let sum = 0;
+  for (const k of keys) {
+    const s = j.sections[k]; if (!s) continue;
+    if (s.status !== "running") { sum += 1; continue; }
+    sum += s.bytes_total ? s.bytes / s.bytes_total : (s.total ? s.done / s.total : 0);
+  }
+  return Math.min(1, sum / keys.length);
+}
+
+// ---- rendering ----------------------------------------------------------------
+
+function render() {
+  const html = offline ? viewOffline() : !S ? "" : view();
+  if (html !== lastHTML) { $("app").innerHTML = html; lastHTML = html; }
+  const sheet = ui.sheet && S && !offline ? viewSheet() : "";
+  if (sheet !== lastSheet) { $("sheet").innerHTML = sheet; lastSheet = sheet; }
+  if (S && S.notice && S.notice.id > ui.notice) { ui.notice = S.notice.id; toast(S.notice.text); }
+}
+
+function viewOffline() {
+  return `<header><div class="brand">iGround</div></header>
+    <h1 style="margin-top:48px">iGround has closed</h1>
+    <p class="lede">Double-click <b>iGround</b> to open it again. Anything already copied is safe.</p>`;
+}
+
+function view() {
+  return header() + drive() + hero() + list() + action() + resultBanner() + guide();
+}
+
+function header() {
+  return `<header><div class="brand">iGround</div>
+    <button class="icon" data-act="sheet" aria-label="Settings" title="Settings">${GEAR}</button></header>`;
+}
+
+function drive() {
+  if (!S.drive) return `<div style="height:36px"></div>`;
+  const others = S.drives.length > 1 || ui.drives;
+  let out = `<button class="drive" data-act="drives" ${active() ? "disabled" : ""} aria-expanded="${ui.drives}">
+      ${DISK}<span>${esc(S.drive.name)} · ${size(S.drive.free)} free</span>${others && !active() ? " ⌄" : ""}</button>`;
+  if (ui.drives && !active()) {
+    out += `<div class="drives">` + S.drives.map((d) => `
+      <button data-act="pick" data-path="${esc(d.path)}" class="${d.path === S.drive.path ? "on" : ""}">
+        <span>${esc(d.name)}</span><small>${d.has_backup ? "has a backup · " : ""}${size(d.free)} free</small></button>`).join("") +
+      `<div class="hint">Plug in another drive to see it here.</div></div>`;
+  }
+  return out;
+}
+
+function hero() {
+  const j = job(), o = S.overview, b = S.backup;
+  let title, lede, bar = "";
+  if (!S.drive) {
+    title = "Plug in your SSD";
+    lede = "iGround will copy everything from iCloud onto it — your photos, files, messages and iPhone backups.";
+  } else if (j && j.state === "stopping") {
+    title = "Stopping…"; lede = "Finishing the files in progress. Everything copied so far is safe.";
+  } else if (j && j.state === "running") {
+    const pct = Math.round(jobProgress() * 100), cur = j.current && j.sections[j.current];
+    if (j.kind === "verify") {
+      title = `Checking your backup… ${pct}%`;
+      lede = "Reading every file on the SSD to make sure it's intact.";
+    } else {
+      title = cur ? `Copying… ${pct}%` : "Getting ready…";
+      lede = cur ? `${esc(LABELS[j.current] || j.current)}${cur.eta ? ` · about ${duration(cur.eta)} left` : ""}. You can keep using your Mac.`
+                 : "Your Mac will stay awake until iGround finishes.";
+    }
+    bar = `<div class="bar hero-bar"><i style="width:${pct}%"></i></div>`;
+  } else if (!o) {
+    title = "Looking at your iCloud…"; lede = "This can take a minute with a big photo library.";
+  } else if (!b) {
+    title = "Ready to copy your iCloud";
+    const parts = [];
+    if (o.photos) parts.push(plural(o.photos, "photo"));
+    if (o.bytes) parts.push(`${size(o.bytes)} of files`);
+    lede = `${parts.length ? parts.join(" and ") + " will be" : "Everything will be"} copied to ${esc(S.drive.name)}.`;
+  } else if (o.ready) {
+    title = "Everything is on your SSD";
+    lede = `Updated ${when(b.updated)}. You can safely downgrade iCloud. <a data-act="guide">${ui.guide ? "Hide steps" : "How?"}</a>`;
+  } else {
+    title = "Almost there";
+    lede = `${o.remaining === 1 ? "One thing" : `${o.remaining} things`} left before you can downgrade iCloud.` +
+           (b.updated ? ` Updated ${when(b.updated)}.` : "");
+  }
+  return `<h1>${title}</h1><p class="lede">${lede}</p>${bar}`;
+}
+
+function rowState(sec) {
+  const j = job(), js = j && j.sections[sec.key];
+  if (js && active() && js.status === "running") return {status: "running", js};
+  if (js && j.kind === "verify" && js.status === "error") return {status: "error", js, verifyBad: true};
+  return {status: sec.status, js};
+}
+
+function list() {
+  if (!S.drive && !sections().length) return "";
+  if (!S.overview) {
+    return `<div class="list">` + ORDER.map((k) => `<div class="row"><div class="row-main">
+      <span class="mark todo">${ICON.todo}</span><span class="label">${LABELS[k]}</span>
+      <span class="meta"><span class="skeleton"></span></span><span></span></div><div class="sub">&nbsp;</div></div>`).join("") + `</div>`;
+  }
+  return `<div class="list">${sections().map(row).join("")}</div>`;
+}
+
+function row(sec) {
+  const {status, js, verifyBad} = rowState(sec);
+  const open = ui.open.has(sec.key);
+  let sub = esc(sec.detail || ""), bar = "";
+  let subClass = status === "todo" && S.backup ? "todo" : status === "error" ? "error" : "";
+  if (status === "running") {
+    const frac = js.bytes_total ? js.bytes / js.bytes_total : (js.total ? js.done / js.total : 0);
+    sub = js.total ? `${js.done.toLocaleString()} of ${js.total.toLocaleString()}${js.item ? " · " + esc(js.item) : ""}` : "Starting…";
+    bar = `<div class="bar"><i style="width:${Math.round(frac * 100)}%"></i></div>`;
+    subClass = "";
+  } else if (verifyBad) {
+    sub = esc(js.summary); subClass = "error";
+  } else if (job() && job().kind === "verify" && js && js.status === "done") {
+    sub = "Checked · no problems";
+  }
+  return `<div class="row ${open ? "open" : ""}">
+    <button class="row-main" data-act="row" data-key="${sec.key}" aria-expanded="${open}">
+      <span class="mark ${status}">${ICON[status] || ICON.todo}</span>
+      <span class="label">${esc(sec.label)}</span>
+      <span class="meta">${esc(sec.headline || "")}</span>
+      <span class="chev">${CHEV}</span>
+    </button>
+    <div class="sub ${subClass}">${sub || "&nbsp;"}</div>${bar}
+    ${open ? more(sec, status) : ""}
+  </div>`;
+}
+
+function more(sec, status) {
+  let body = "";
+  const acts = [];
+  if (sec.key === "iphone") {
+    if (!sec.relocated) {
+      body += `<p>WhatsApp's own iCloud backup can't be copied by anyone. A backup of your iPhone includes all
+        your chats and media, so iGround keeps your iPhone backups on this SSD instead of in iCloud.</p>`;
+      acts.push(`<button class="chip solid" data-act="iphone" data-do="setup">Set up</button>`);
+    } else {
+      body += `<ol><li>Connect your iPhone to this Mac (keep the SSD plugged in).</li>
+        <li>Open Finder and select your iPhone in the sidebar.</li>
+        <li>Choose “Back up all of the data on your iPhone to this Mac”.</li>
+        <li>Tick “Encrypt local backup” and pick a password you'll remember.</li>
+        <li>Click “Back Up Now”, then come back here.</li></ol>`;
+      if (sec.devices && sec.devices.length) {
+        body += `<p>${sec.devices.map((d) => `${esc(d.name)} — backed up ${when(d.date)}${d.encrypted === false ? " (not encrypted)" : ""}`).join("<br>")}</p>`;
+      }
+      acts.push(`<button class="chip" data-act="refresh">Check again</button>`);
+    }
+  } else if (sec.key === "apps" && sec.apps) {
+    body += `<p>${esc(sec.apps.join(", "))}</p>`;
+  } else if (sec.key === "messages") {
+    body += `<p>Your message history and attachments, for restoring onto a Mac. Quit Messages before copying for a clean copy.</p>`;
+  } else if (sec.key === "photos" && status !== "error") {
+    body += `<p>Full-quality originals, in folders by year and month. Your albums and favourites get their own folders.</p>`;
+  }
+  if (sec.status === "off") body += `<p>Turned off in Settings, so it won't be copied.</p>`;
+  if (sec.errors && sec.errors.length) {
+    body += `<p>Couldn't copy these yet — iGround will try again next time:</p><ul class="errs">` +
+      sec.errors.slice(0, 6).map((e) => `<li><b>${esc(e.name.split("/").pop())}</b> — ${esc(e.error)}</li>`).join("") +
+      (sec.errors.length > 6 ? `<li>…and ${sec.errors.length - 6} more</li>` : "") + `</ul>`;
+  }
+  if (sec.action && sec.action.open) {
+    acts.push(`<button class="chip solid" data-act="open" data-target="${sec.action.open}">${esc(sec.action.label)}</button>`);
+    acts.push(`<button class="chip" data-act="refresh">Check again</button>`);
+  }
+  if (sec.folder && S.backup && sec.status !== "empty") {
+    acts.push(`<button class="chip" data-act="open" data-target="${esc(sec.folder)}">Show in Finder</button>`);
+  }
+  return `<div class="more">${body}${acts.length ? `<div class="actions">${acts.join("")}</div>` : ""}</div>`;
+}
+
+function action() {
+  if (!S.drive) return `<p class="note">Waiting for a drive…</p>`;
+  const j = job();
+  if (active()) {
+    const stopping = j.state === "stopping";
+    return `<button class="primary quiet" data-act="stop" ${stopping ? "disabled" : ""}>${stopping ? "Stopping…" : "Stop"}</button>
+      <p class="note">${j.kind === "verify" ? "Checking doesn't change anything." : "Stopping is safe — run it again any time to continue."}</p>`;
+  }
+  const o = S.overview, label = S.backup ? "Update backup" : `Copy to ${esc(S.drive.name)}`;
+  let out = `<button class="primary" data-act="backup" ${!o || ui.pending ? "disabled" : ""}>${o ? label : "Looking…"}</button>`;
+  if (o && o.space && o.space.short) {
+    out += `<p class="note warn">This drive may be too small: about ${size(o.space.needed)} of files, ${size(o.space.free)} free.</p>`;
+  }
+  if (S.backup) {
+    out += `<div class="links"><button data-act="open" data-target="backup">Show in Finder</button>
+      <button data-act="verify">Check files</button>
+      <button data-act="open" data-target="about">About this backup</button></div>`;
+  } else if (o) {
+    out += `<p class="note">Nothing is deleted from iCloud. You can stop at any time.</p>`;
+  }
+  return out;
+}
+
+function resultBanner() {
+  const j = job();
+  if (!j || active() || !j.message) return "";
+  return `<div class="result"><span>${esc(j.message)}</span><button data-act="dismiss" aria-label="Dismiss">✕</button></div>`;
+}
+
+function guide() {
+  if (!ui.guide || !S.overview || !S.overview.ready || active()) return "";
+  return `<div class="guide"><b>Freeing up iCloud</b>
+    <p class="caution">Deleting from iCloud removes things from all your devices. If you can, keep a second copy of the SSD first.</p>
+    <ol>
+      <li><b>iPhone backups:</b> on your iPhone, Settings → your name → iCloud → iCloud Backup → turn off. Then delete the old backup under Manage Account Storage → Backups.</li>
+      <li><b>Photos:</b> Manage Account Storage → Photos → Turn Off &amp; Delete (or delete photos in the Photos app), then empty “Recently Deleted”.</li>
+      <li><b>iCloud Drive:</b> delete what you don't need there and empty “Recently Deleted”.</li>
+      <li><b>WhatsApp:</b> Settings → Chats → Chat Backup → turn off “Include Videos”.</li>
+      <li>Check Manage Account Storage, then choose a smaller plan.</li>
+    </ol></div>`;
+}
+
+function viewSheet() {
+  const st = S.settings, iphone = sections().find((s) => s.key === "iphone");
+  const kind = (k, label, hint) => `<label class="opt"><span>${label}${hint ? `<small>${hint}</small>` : ""}</span>
+      <input type="checkbox" class="switch" data-set="kind" value="${k}" ${st.kinds.includes(k) ? "checked" : ""} ${active() ? "disabled" : ""}></label>`;
+  return `<div class="scrim" data-act="close"><div class="sheet" role="dialog" aria-label="Settings">
+    <div class="sheet-head"><h2>Settings</h2><button class="chip" data-act="close">Done</button></div>
+    <h3>What to back up</h3>
+    ${kind("photos", "Photos")}${kind("drive", "iCloud Drive")}${kind("apps", "App Documents", "Pages, Numbers, Keynote and other apps")}${kind("messages", "Messages")}
+    <h3>This Mac</h3>
+    <label class="opt"><span>Free up space on this Mac<small>Once a file is safely on the SSD, remove the downloaded copy from this Mac. It stays in iCloud.</small></span>
+      <input type="checkbox" class="switch" data-set="evict" ${st.evict ? "checked" : ""} ${active() ? "disabled" : ""}></label>
+    <h3>More</h3>
+    <div class="opt"><span>Check every file<small>Re-read the backup to make sure nothing is damaged.</small></span>
+      <button class="chip" data-act="verify" ${!S.backup || active() ? "disabled" : ""}>Check</button></div>
+    <div class="opt"><span>Start a separate backup<small>Copies everything again into a new dated folder.</small></span>
+      <button class="chip" data-act="new" ${!S.drive || active() ? "disabled" : ""}>Start</button></div>
+    ${iphone && iphone.relocated ? `<div class="opt"><span>iPhone backups<small>Currently saved on the SSD.</small></span>
+      <button class="chip" data-act="iphone" data-do="undo" ${active() ? "disabled" : ""}>Move back to Mac</button></div>` : ""}
+    <div class="foot">Nothing is ever deleted from iCloud by iGround.</div>
+  </div></div>`;
+}
+
+// ---- interaction ----------------------------------------------------------------
+
+document.addEventListener("click", (ev) => {
+  const el = ev.target.closest("[data-act]");
+  if (!el || el.disabled) return;
+  const act = el.dataset.act;
+  if (act === "close" && el.classList.contains("scrim") && ev.target !== el) return;  // clicks inside the sheet
+  switch (act) {
+    case "sheet": ui.sheet = true; break;
+    case "close": ui.sheet = false; break;
+    case "drives": ui.drives = !ui.drives; break;
+    case "pick": ui.drives = false; api("/api/drive", {path: el.dataset.path}); return;
+    case "row": {
+      const k = el.dataset.key; ui.open.has(k) ? ui.open.delete(k) : ui.open.add(k); break;
+    }
+    case "guide": ui.guide = !ui.guide; break;
+    case "backup": ui.guide = false; api("/api/backup"); return;
+    case "new":
+      if (!confirm("Start a separate backup? Everything will be copied again into a new dated folder.")) return;
+      ui.sheet = false; api("/api/backup", {new: true}); return;
+    case "verify": ui.sheet = false; api("/api/verify"); return;
+    case "stop": api("/api/stop"); return;
+    case "dismiss": api("/api/dismiss"); return;
+    case "refresh": api("/api/refresh"); return;
+    case "open": api("/api/open", {target: el.dataset.target}); return;
+    case "iphone":
+      if (el.dataset.do === "undo" && !confirm("Save iPhone backups on this Mac again instead of the SSD?")) return;
+      api("/api/iphone", {action: el.dataset.do}); return;
+  }
+  render();
+});
+
+document.addEventListener("change", (ev) => {
+  const el = ev.target;
+  if (el.dataset.set === "kind") {
+    const kinds = [...document.querySelectorAll('[data-set="kind"]')].filter((x) => x.checked).map((x) => x.value);
+    if (!kinds.length) { el.checked = true; toast("Choose at least one thing to back up."); return; }
+    api("/api/settings", {kinds});
+  } else if (el.dataset.set === "evict") {
+    api("/api/settings", {evict: el.checked});
+  }
+});
+
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && (ui.sheet || ui.drives)) { ui.sheet = false; ui.drives = false; render(); }
+});
+
+poll();
+</script>
+</body>
+</html>

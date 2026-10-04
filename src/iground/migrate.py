@@ -32,6 +32,7 @@ class Options:
     force: bool = False
     download_timeout: float = 1800.0
     excludes: Sequence[str] = DEFAULT_EXCLUDES
+    cancel: Optional[threading.Event] = None  # set it to stop cleanly after files in flight
 
 
 @dataclass
@@ -43,6 +44,7 @@ class Result:
     failed: int = 0
     bytes_copied: int = 0
     errors: List[Tuple[str, str]] = field(default_factory=list)
+    cancelled: int = 0  # files not started because the run was stopped
 
 
 # progress(event, entry, detail): event is one of "download", "copied", "skipped", "failed"
@@ -137,7 +139,11 @@ class Migrator:
                 for fut in as_completed(futures):
                     entry = futures[fut]
                     try:
-                        copied_bytes, evicted = fut.result()
+                        outcome = fut.result()
+                        if outcome is None:
+                            result.cancelled += 1
+                            continue
+                        copied_bytes, evicted = outcome
                     except Exception as exc:  # one bad file must not stop the whole migration
                         msg = str(exc) or exc.__class__.__name__
                         manifest.put(entry.rel_path, entry.kind.value, entry.size, entry.mtime_ns, mf.FAILED, error=msg)
@@ -151,7 +157,9 @@ class Migrator:
                         self.progress("copied", entry, "")
         return result
 
-    def _process(self, entry: Entry, manifest: mf.Manifest) -> Tuple[int, bool]:
+    def _process(self, entry: Entry, manifest: mf.Manifest) -> Optional[Tuple[int, bool]]:
+        if self.options.cancel is not None and self.options.cancel.is_set():
+            return None
         target = self.dest / entry.rel_path
         if entry.kind is Kind.SYMLINK:
             copy_symlink(entry.path, target)
@@ -189,6 +197,7 @@ class VerifyResult:
     mismatched: List[str] = field(default_factory=list)
     missing_on_dest: List[str] = field(default_factory=list)
     not_migrated: List[str] = field(default_factory=list)
+    cancelled: bool = False
 
 
 def verify(
@@ -196,8 +205,12 @@ def verify(
     source: Optional[Path] = None,
     excludes: Sequence[str] = DEFAULT_EXCLUDES,
     state_dir: Optional[Path] = None,
+    progress: Optional[Callable[[int, int], None]] = None,
+    cancel: Optional[threading.Event] = None,
 ) -> VerifyResult:
     """Re-hash every migrated file on the SSD against the manifest.
+
+    `progress(done, total)` is called as files are checked; setting `cancel` stops early.
 
     With `source`, also report files in iCloud Drive that were never migrated.
     """
@@ -207,9 +220,13 @@ def verify(
         raise MigrationError(f"no iGround manifest found for {dest}")
     out = VerifyResult()
     with mf.Manifest(state_dir) as manifest:
-        for rec in manifest.records():
-            if rec.status not in mf.DONE_STATUSES:
-                continue
+        records = [r for r in manifest.records() if r.status in mf.DONE_STATUSES]
+        for n, rec in enumerate(records):
+            if cancel is not None and cancel.is_set():
+                out.cancelled = True
+                return out
+            if progress:
+                progress(n, len(records))
             target = dest / rec.rel_path
             if rec.kind == Kind.SYMLINK.value:
                 if target.is_symlink():

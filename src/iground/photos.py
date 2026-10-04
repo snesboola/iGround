@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -176,6 +177,7 @@ class PhotosResult:
     errors: List[Tuple[str, str]] = field(default_factory=list)
     albums_saved: bool = False  # album list could be read from Photos
     album_folders: bool = False  # Albums/ and Favourites/ folders were built
+    cancelled: bool = False
 
 
 # progress(event, item, detail): "exported" | "failed" | "planned" | "skipped"
@@ -208,7 +210,9 @@ class PhotosExporter:
         progress: Optional[PhotoProgress] = None,
         min_free: int = MIN_FREE_BYTES,
         state_dir: Optional[Path] = None,
+        cancel: Optional[threading.Event] = None,
     ) -> None:
+        self.cancel = cancel
         self.dest = Path(dest)
         self.state_dir = Path(state_dir) if state_dir else mf.default_state_dir(self.dest)
         self.client = client or PhotosClient()
@@ -240,6 +244,9 @@ class PhotosExporter:
         with mf.Manifest(self.state_dir) as manifest:
             manifest.set_meta("source", "Photos library")
             for start in range(0, len(todo), self.batch_size):
+                if self.cancel is not None and self.cancel.is_set():
+                    result.cancelled = True
+                    break
                 free = shutil.disk_usage(self.dest).free
                 if free < self.min_free:
                     raise PhotosError(f"SSD almost full ({free} bytes free); stopping Photos export")

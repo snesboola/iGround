@@ -43,7 +43,7 @@ class WizardReporter(Reporter):
         self.console = console
         self.printer: Optional[ProgressPrinter] = None
 
-    def section(self, label, index, total, items, size):
+    def section(self, label, index, total, items, size, kind=""):
         self.console.say(f"\n  [{index}/{total}] {label}")
         self.printer = ProgressPrinter(items, size, indent="      ")
         return self.printer

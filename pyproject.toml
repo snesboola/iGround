@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "iground"
-version = "0.3.0"
+version = "0.4.0"
 description = "Move everything off iCloud (Drive, Photos, Messages, iPhone/WhatsApp backups) onto an external SSD."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -16,3 +16,6 @@ iground = "iground.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+iground = ["app/static/*"]

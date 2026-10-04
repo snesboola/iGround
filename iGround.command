@@ -9,6 +9,6 @@ if ! command -v python3 >/dev/null 2>&1; then
   read -r -p "Press Return to close."
   exit 1
 fi
-PYTHONPATH="$PWD/src" python3 -m iground "$@"
+PYTHONPATH="$PWD/src" python3 -m iground app "$@"
 echo
-read -r -p "Press Return to close this window."
+read -r -p "iGround has quit. Press Return to close this window."
