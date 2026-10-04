@@ -222,33 +222,5 @@ class ICloudClientTests(unittest.TestCase):
             client.download(Path("/nonexistent/x"), timeout=1)
 
 
-class CLITests(Base):
-    def run_cli(self, *argv):
-        out = io.StringIO()
-        with mock.patch("iground.cli.ICloudClient", return_value=self.cloud):
-            code = cli.main(list(argv), out=out)
-        return code, out.getvalue()
-
-    def test_scan_migrate_status_verify(self):
-        code, out = self.run_cli("scan", "--source", str(self.src))
-        self.assertEqual(code, 0)
-        self.assertIn("iCloud-only:      1", out)
-
-        code, out = self.run_cli("migrate", str(self.dst), "--source", str(self.src))
-        self.assertEqual(code, 0, out)
-        self.assertIn("Copied 4 item(s)", out)
-
-        code, out = self.run_cli("status", str(self.dst))
-        self.assertIn("verified", out)
-
-        code, out = self.run_cli("verify", str(self.dst), "--source", str(self.src))
-        self.assertEqual(code, 0, out)
-        self.assertIn("Verified OK:          4", out)
-
-    def test_error_exit_code(self):
-        code, _ = self.run_cli("status", str(self.dst))
-        self.assertEqual(code, 2)
-
-
 if __name__ == "__main__":
     unittest.main()

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterator, Optional
+from typing import Dict, Iterator, List, Optional
 
 MANIFEST_DIR = ".iground"
 MANIFEST_NAME = "manifest.sqlite"
@@ -17,6 +18,9 @@ COPIED = "copied"
 VERIFIED = "verified"
 FAILED = "failed"
 EVICTED = "evicted"  # copied + verified, then local copy removed from the Mac
+
+# Photos library items
+EXPORTED = "exported"
 
 DONE_STATUSES = (COPIED, VERIFIED, EVICTED)
 
@@ -28,6 +32,14 @@ CREATE TABLE IF NOT EXISTS files (
     mtime_ns   INTEGER NOT NULL,
     sha256     TEXT,
     status     TEXT NOT NULL,
+    error      TEXT,
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS photos (
+    id         TEXT PRIMARY KEY,
+    status     TEXT NOT NULL,
+    taken_at   REAL,
+    files      TEXT,
     error      TEXT,
     updated_at REAL NOT NULL
 );
@@ -135,3 +147,36 @@ class Manifest:
                 "SELECT status, COUNT(*), COALESCE(SUM(size), 0) FROM files GROUP BY status"
             ).fetchall()
         return {status: {"files": n, "bytes": b} for status, n, b in rows}
+
+    # --- Photos library items -------------------------------------------------
+
+    def put_photo(
+        self,
+        photo_id: str,
+        status: str,
+        taken_at: Optional[float] = None,
+        files: Optional[List[str]] = None,
+        error: Optional[str] = None,
+    ) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT OR REPLACE INTO photos VALUES (?, ?, ?, ?, ?, ?)",
+                (photo_id, status, taken_at, json.dumps(files or []), error, time.time()),
+            )
+            self._db.commit()
+
+    def photo_statuses(self) -> Dict[str, str]:
+        with self._lock:
+            rows = self._db.execute("SELECT id, status FROM photos").fetchall()
+        return dict(rows)
+
+    def photo_files(self) -> Dict[str, List[str]]:
+        with self._lock:
+            rows = self._db.execute("SELECT id, files FROM photos WHERE status = ?", (EXPORTED,)).fetchall()
+        return {pid: json.loads(files or "[]") for pid, files in rows}
+
+    def photo_errors(self) -> List[tuple]:
+        with self._lock:
+            return self._db.execute(
+                "SELECT id, error FROM photos WHERE status = ? ORDER BY id", (FAILED,)
+            ).fetchall()

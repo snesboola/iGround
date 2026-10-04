@@ -223,3 +223,28 @@ def verify(dest: Path, source: Optional[Path] = None, excludes: Sequence[str] = 
                 if e.rel_path not in seen:
                     out.not_migrated.append(e.rel_path)
     return out
+
+
+@dataclass
+class Diff:
+    on_ssd: int = 0
+    missing: List[str] = field(default_factory=list)  # in the source, never migrated
+    changed: List[str] = field(default_factory=list)  # migrated, but the source changed since
+
+
+def diff_against_source(source: Path, dest: Path, excludes: Sequence[str] = DEFAULT_EXCLUDES) -> Diff:
+    """Quick (no hashing) comparison of a source folder with what the manifest says is on the SSD."""
+    out = Diff()
+    done = {}
+    if mf.Manifest.exists(dest):
+        with mf.Manifest(dest) as manifest:
+            done = {r.rel_path: r for r in manifest.records() if r.status in mf.DONE_STATUSES}
+    for e in scan(Path(source), excludes):
+        rec = done.get(e.rel_path)
+        if rec is None:
+            out.missing.append(e.rel_path)
+        elif rec.size != e.size:
+            out.changed.append(e.rel_path)
+        else:
+            out.on_ssd += 1
+    return out
