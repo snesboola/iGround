@@ -41,9 +41,15 @@ class Entry:
 
 
 def is_excluded(rel_path: str, patterns: Sequence[str]) -> bool:
+    """Glob patterns match any path component; '/Name' matches only that exact top-level item."""
     name = rel_path.rsplit("/", 1)[-1]
     parts = rel_path.split("/")
     for pat in patterns:
+        if pat.startswith("/"):
+            anchored = pat[1:]
+            if rel_path == anchored or rel_path.startswith(anchored + "/"):
+                return True
+            continue
         if fnmatch.fnmatchcase(rel_path, pat) or fnmatch.fnmatchcase(name, pat):
             return True
         if any(fnmatch.fnmatchcase(p, pat) for p in parts[:-1]):

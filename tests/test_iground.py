@@ -77,6 +77,13 @@ class ScanTests(Base):
         rels = {e.rel_path for e in scan(self.src, [".DS_Store", "Deep"])}
         self.assertNotIn("Docs/Deep/c.bin", rels)
 
+    def test_anchored_exclude_only_matches_top_level(self):
+        (self.src / "Deep").mkdir()
+        (self.src / "Deep" / "x.txt").write_text("top")
+        rels = {e.rel_path for e in scan(self.src, [".DS_Store", "/Deep"])}
+        self.assertNotIn("Deep/x.txt", rels)
+        self.assertIn("Docs/Deep/c.bin", rels)  # same name deeper down is kept
+
     def test_stale_placeholder_ignored_when_real_file_exists(self):
         write_placeholder(self.src / "a.txt", 5)
         entries = [e for e in scan(self.src) if e.rel_path == "a.txt"]

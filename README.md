@@ -50,12 +50,13 @@ The iGround window opens:
        Nothing is deleted from iCloud. You can stop at any time.
 ```
 
+- **Choose what to copy** (link under the title, or ⚙): turn Photos, iCloud Drive, App Documents or Messages on or off, and pick individual **photo years**, **iCloud Drive folders** and **apps**, with their sizes and a running total against the SSD's free space. Your choices are remembered. New folders and photos are included automatically. Anything you skip stays only in iCloud, and the app says so.
 - **One button.** Click **Copy to …**. Each row shows its own progress, and the title shows how far along you are and roughly how long is left. You can **Stop** at any time and continue later.
 - **Every row tells you where it stands**: ✓ when it's safely on the SSD, or what's still missing. Click a row for more detail, to show it in Finder, or to see anything that couldn't be copied.
 - **iPhone & WhatsApp**: click the row → **Set up**, then back up your iPhone in Finder as the row describes, then click **Check again**.
 - When every row shows ✓, the title changes to **"Everything is on your SSD"**. Click **How?** for the steps to free up iCloud and downgrade.
 - **Update backup** copies only what's new or changed since last time. **Check files** re-reads every file on the SSD to make sure nothing is damaged.
-- **⚙ Settings**: choose what to back up, free up space on the Mac as files are copied, start a separate backup, or move iPhone backups back to the Mac.
+- **⚙ Settings**: free up space on the Mac as files are copied, start a separate backup, or move iPhone backups back to the Mac.
 
 The Terminal window that opens alongside keeps iGround running. Close it when you're done. The app follows your Mac's light or dark mode. If Google Chrome is installed, iGround opens in its own clean window; otherwise it opens in your default browser.
 

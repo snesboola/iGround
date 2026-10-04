@@ -126,6 +126,24 @@
   .switch:checked { background: var(--ok); }
   .switch:checked::after { left: 18px; }
   .foot { margin-top: 16px; font-size: 12px; color: var(--muted); }
+  .sheet { max-height: calc(100vh - 96px); overflow: auto; }
+  .sheet .intro { margin: 0 0 6px; color: var(--muted); font-size: 13px; }
+  .cat { padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .cat:last-of-type { border-bottom: 0; }
+  .cat-head { display: flex; align-items: center; gap: 12px; }
+  .cat-head .name { flex: 1; font-weight: 500; }
+  .cat-head .meta { color: var(--muted); font-size: 13px; }
+  .cat .more-link { font-size: 13px; color: var(--muted); margin-top: 2px; }
+  .cat .more-link:hover { color: var(--fg); }
+  .picks { margin: 8px 0 2px; padding: 2px 0 2px 12px; border-left: 2px solid var(--line); }
+  .pick { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: 14px; cursor: pointer; }
+  .pick span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pick small { color: var(--muted); font-size: 12px; }
+  .pick.off span { color: var(--muted); }
+  .tick { width: 16px; height: 16px; margin: 0; accent-color: var(--ok); flex: none; cursor: pointer; }
+  .picks .all { font-size: 12px; color: var(--muted); padding: 2px 0 4px; display: flex; gap: 12px; }
+  .total { margin-top: 14px; font-size: 13px; color: var(--muted); }
+  .total b { color: var(--fg); font-weight: 600; }
 
   .toast { position: fixed; left: 50%; top: 16px; transform: translate(-50%, -12px); opacity: 0;
            background: var(--btn); color: var(--btn-fg); padding: 10px 16px; border-radius: 10px; font-size: 14px;
@@ -144,7 +162,7 @@ const TOKEN = "__TOKEN__";
 const ORDER = ["photos", "drive", "apps", "messages", "iphone"];
 const LABELS = {photos: "Photos", drive: "iCloud Drive", apps: "App Documents", messages: "Messages", iphone: "iPhone & WhatsApp"};
 let S = null, offline = false, timer = null, lastHTML = "", lastSheet = "";
-const ui = {open: new Set(), drives: false, sheet: false, guide: false, notice: 0, pending: false};
+const ui = {open: new Set(), drives: false, sheet: "", picks: new Set(), guide: false, notice: 0, pending: false};
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
@@ -242,7 +260,7 @@ function jobProgress() {
 function render() {
   const html = offline ? viewOffline() : !S ? "" : view();
   if (html !== lastHTML) { $("app").innerHTML = html; lastHTML = html; }
-  const sheet = ui.sheet && S && !offline ? viewSheet() : "";
+  const sheet = !S || offline ? "" : ui.sheet === "settings" ? viewSheet() : ui.sheet === "choose" ? viewChooser() : "";
   if (sheet !== lastSheet) { $("sheet").innerHTML = sheet; lastSheet = sheet; }
   if (S && S.notice && S.notice.id > ui.notice) { ui.notice = S.notice.id; toast(S.notice.text); }
 }
@@ -302,10 +320,13 @@ function hero() {
     const parts = [];
     if (o.photos) parts.push(plural(o.photos, "photo"));
     if (o.bytes) parts.push(`${size(o.bytes)} of files`);
-    lede = `${parts.length ? parts.join(" and ") + " will be" : "Everything will be"} copied to ${esc(S.drive.name)}.`;
+    lede = `${parts.length ? parts.join(" and ") + " will be" : "Nothing is chosen to be"} copied to ${esc(S.drive.name)}. ` +
+           `<a data-act="choose">${o.partial ? "Change what to copy" : "Choose what to copy"}</a>`;
   } else if (o.ready) {
-    title = "Everything is on your SSD";
-    lede = `Updated ${when(b.updated)}. You can safely downgrade iCloud. <a data-act="guide">${ui.guide ? "Hide steps" : "How?"}</a>`;
+    title = o.partial ? "Everything you chose is on your SSD" : "Everything is on your SSD";
+    lede = `Updated ${when(b.updated)}. ` +
+           (o.partial ? "Anything you skipped is still only in iCloud. " : "You can safely downgrade iCloud. ") +
+           `<a data-act="guide">${ui.guide ? "Hide steps" : "How to downgrade"}</a>`;
   } else {
     title = "Almost there";
     lede = `${o.remaining === 1 ? "One thing" : `${o.remaining} things`} left before you can downgrade iCloud.` +
@@ -377,14 +398,15 @@ function more(sec, status) {
       }
       acts.push(`<button class="chip" data-act="refresh">Check again</button>`);
     }
-  } else if (sec.key === "apps" && sec.apps) {
-    body += `<p>${esc(sec.apps.join(", "))}</p>`;
+  } else if (sec.key === "apps" && sec.choices) {
+    const on = sec.choices.filter((c) => c.on).map((c) => c.label);
+    body += `<p>${on.length ? esc(on.join(", ")) : "No apps chosen."}</p>`;
   } else if (sec.key === "messages") {
     body += `<p>Your message history and attachments, for restoring onto a Mac. Quit Messages before copying for a clean copy.</p>`;
   } else if (sec.key === "photos" && status !== "error") {
     body += `<p>Full-quality originals, in folders by year and month. Your albums and favourites get their own folders.</p>`;
   }
-  if (sec.status === "off") body += `<p>Turned off in Settings, so it won't be copied.</p>`;
+  if (sec.status === "off") body += `<p>You chose not to copy this, so it stays only in iCloud.</p>`;
   if (sec.errors && sec.errors.length) {
     body += `<p>Couldn't copy these yet — iGround will try again next time:</p><ul class="errs">` +
       sec.errors.slice(0, 6).map((e) => `<li><b>${esc(e.name.split("/").pop())}</b> — ${esc(e.error)}</li>`).join("") +
@@ -394,7 +416,10 @@ function more(sec, status) {
     acts.push(`<button class="chip solid" data-act="open" data-target="${sec.action.open}">${esc(sec.action.label)}</button>`);
     acts.push(`<button class="chip" data-act="refresh">Check again</button>`);
   }
-  if (sec.folder && S.backup && sec.status !== "empty") {
+  if (sec.key !== "iphone" && sec.status !== "empty" && sec.status !== "error" && !active()) {
+    acts.push(`<button class="chip" data-act="choose" data-key="${sec.key}">${sec.choices ? "Choose what to copy" : sec.status === "off" ? "Copy this" : "Choose"}</button>`);
+  }
+  if (sec.folder && S.backup && sec.status !== "empty" && sec.status !== "off") {
     acts.push(`<button class="chip" data-act="open" data-target="${esc(sec.folder)}">Show in Finder</button>`);
   }
   return `<div class="more">${body}${acts.length ? `<div class="actions">${acts.join("")}</div>` : ""}</div>`;
@@ -414,9 +439,10 @@ function action() {
     out += `<p class="note warn">This drive may be too small: about ${size(o.space.needed)} of files, ${size(o.space.free)} free.</p>`;
   }
   if (S.backup) {
-    out += `<div class="links"><button data-act="open" data-target="backup">Show in Finder</button>
+    out += `<div class="links"><button data-act="choose">Choose what to copy</button>
+      <button data-act="open" data-target="backup">Show in Finder</button>
       <button data-act="verify">Check files</button>
-      <button data-act="open" data-target="about">About this backup</button></div>`;
+      <button data-act="open" data-target="about">About</button></div>`;
   } else if (o) {
     out += `<p class="note">Nothing is deleted from iCloud. You can stop at any time.</p>`;
   }
@@ -433,6 +459,7 @@ function guide() {
   if (!ui.guide || !S.overview || !S.overview.ready || active()) return "";
   return `<div class="guide"><b>Freeing up iCloud</b>
     <p class="caution">Deleting from iCloud removes things from all your devices. If you can, keep a second copy of the SSD first.</p>
+    ${S.overview.partial ? `<p class="caution">You skipped some things, so they're only in iCloud. Don't delete those unless you're sure.</p>` : ""}
     <ol>
       <li><b>iPhone backups:</b> on your iPhone, Settings → your name → iCloud → iCloud Backup → turn off. Then delete the old backup under Manage Account Storage → Backups.</li>
       <li><b>Photos:</b> Manage Account Storage → Photos → Turn Off &amp; Delete (or delete photos in the Photos app), then empty “Recently Deleted”.</li>
@@ -444,12 +471,10 @@ function guide() {
 
 function viewSheet() {
   const st = S.settings, iphone = sections().find((s) => s.key === "iphone");
-  const kind = (k, label, hint) => `<label class="opt"><span>${label}${hint ? `<small>${hint}</small>` : ""}</span>
-      <input type="checkbox" class="switch" data-set="kind" value="${k}" ${st.kinds.includes(k) ? "checked" : ""} ${active() ? "disabled" : ""}></label>`;
   return `<div class="scrim" data-act="close"><div class="sheet" role="dialog" aria-label="Settings">
     <div class="sheet-head"><h2>Settings</h2><button class="chip" data-act="close">Done</button></div>
-    <h3>What to back up</h3>
-    ${kind("photos", "Photos")}${kind("drive", "iCloud Drive")}${kind("apps", "App Documents", "Pages, Numbers, Keynote and other apps")}${kind("messages", "Messages")}
+    <div class="opt"><span>What to copy<small>Pick photo years, iCloud Drive folders and apps.</small></span>
+      <button class="chip" data-act="choose" ${active() ? "disabled" : ""}>Choose…</button></div>
     <h3>This Mac</h3>
     <label class="opt"><span>Free up space on this Mac<small>Once a file is safely on the SSD, remove the downloaded copy from this Mac. It stays in iCloud.</small></span>
       <input type="checkbox" class="switch" data-set="evict" ${st.evict ? "checked" : ""} ${active() ? "disabled" : ""}></label>
@@ -464,6 +489,69 @@ function viewSheet() {
   </div></div>`;
 }
 
+function viewChooser() {
+  const st = S.settings, secs = Object.fromEntries(sections().map((s) => [s.key, s]));
+  const busy = active() ? "disabled" : "";
+  const GROUP = {photos: "years", drive: "drive", apps: "apps"};
+  const UNIT = {photos: "years", drive: "folders", apps: "apps"};
+  let photos = 0, bytes = 0;
+
+  const cat = (key) => {
+    const sec = secs[key];
+    if (!sec) return "";
+    const unavailable = sec.status === "empty" || sec.status === "error";
+    const on = st.kinds.includes(key) && !unavailable;
+    const group = GROUP[key], choices = sec.choices || [];
+    const skipped = new Set(group ? st.skip[group] : []);
+    const picked = choices.filter((c) => !skipped.has(c.id));
+    let meta;
+    if (unavailable) meta = esc(sec.headline || "");
+    else if (key === "photos") {
+      const n = picked.reduce((a, c) => a + c.count, 0);
+      if (on) photos += n;
+      meta = `${n.toLocaleString()} photos & videos`;
+    } else {
+      const b = choices.length ? picked.reduce((a, c) => a + c.bytes, 0) : (sec.bytes || 0);
+      if (on) bytes += b;
+      meta = size(b);
+    }
+    let out = `<div class="cat"><label class="cat-head"><span class="name">${LABELS[key]}</span>
+      <span class="meta">${on || unavailable ? meta : "Not copying"}</span>
+      <input type="checkbox" class="switch" data-set="kind" value="${key}" ${on ? "checked" : ""} ${unavailable ? "disabled" : busy}></label>`;
+    if (on && choices.length > 1) {
+      const open = ui.picks.has(key);
+      out += `<button class="more-link" data-act="picks" data-key="${key}">${open ? "Hide" : "Choose"} ${UNIT[key]}` +
+             ` · ${picked.length} of ${choices.length}</button>`;
+      if (open) {
+        out += `<div class="picks"><div class="all"><button class="more-link" data-act="all" data-group="${group}">Select all</button>
+          <button class="more-link" data-act="none" data-group="${group}" data-key="${key}">Select none</button></div>` +
+          choices.map((c) => `<label class="pick ${skipped.has(c.id) ? "off" : ""}">
+            <input type="checkbox" class="tick" data-set="skip" data-group="${group}" value="${esc(c.id)}" ${skipped.has(c.id) ? "" : "checked"} ${busy}>
+            <span>${esc(c.label)}</span><small>${key === "photos" ? c.count.toLocaleString() : size(c.bytes)}</small></label>`).join("") +
+          `</div>`;
+      }
+    }
+    return out + `</div>`;
+  };
+
+  const body = ["photos", "drive", "apps", "messages"].map(cat).join("");
+  const free = S.drive ? ` · ${esc(S.drive.name)} has ${size(S.drive.free)} free` : "";
+  const parts = [];
+  if (photos) parts.push(`${photos.toLocaleString()} photos & videos`);
+  if (bytes) parts.push(size(bytes));
+  return `<div class="scrim" data-act="close"><div class="sheet" role="dialog" aria-label="Choose what to copy">
+    <div class="sheet-head"><h2>Choose what to copy</h2><button class="chip" data-act="close">Done</button></div>
+    <p class="intro">Anything you don't choose stays in iCloud. New folders and photos are included automatically.</p>
+    ${body}
+    <div class="total">Copying <b>${parts.length ? parts.join(" + ") : "nothing"}</b>${free}</div>
+    <div class="foot">iPhone &amp; WhatsApp backups are set up from their own row.</div>
+  </div></div>`;
+}
+
+function setSkip(group, values) {
+  api("/api/settings", {skip: {[group]: values}});
+}
+
 // ---- interaction ----------------------------------------------------------------
 
 document.addEventListener("click", (ev) => {
@@ -472,8 +560,20 @@ document.addEventListener("click", (ev) => {
   const act = el.dataset.act;
   if (act === "close" && el.classList.contains("scrim") && ev.target !== el) return;  // clicks inside the sheet
   switch (act) {
-    case "sheet": ui.sheet = true; break;
-    case "close": ui.sheet = false; break;
+    case "sheet": ui.sheet = "settings"; break;
+    case "close": ui.sheet = ""; break;
+    case "choose":
+      ui.sheet = "choose";
+      if (el.dataset.key) ui.picks.add(el.dataset.key);
+      break;
+    case "picks": {
+      const k = el.dataset.key; ui.picks.has(k) ? ui.picks.delete(k) : ui.picks.add(k); break;
+    }
+    case "all": setSkip(el.dataset.group, []); return;
+    case "none": {
+      const sec = sections().find((s) => s.key === el.dataset.key);
+      setSkip(el.dataset.group, (sec.choices || []).map((c) => c.id)); return;
+    }
     case "drives": ui.drives = !ui.drives; break;
     case "pick": ui.drives = false; api("/api/drive", {path: el.dataset.path}); return;
     case "row": {
@@ -483,8 +583,8 @@ document.addEventListener("click", (ev) => {
     case "backup": ui.guide = false; api("/api/backup"); return;
     case "new":
       if (!confirm("Start a separate backup? Everything will be copied again into a new dated folder.")) return;
-      ui.sheet = false; api("/api/backup", {new: true}); return;
-    case "verify": ui.sheet = false; api("/api/verify"); return;
+      ui.sheet = ""; api("/api/backup", {new: true}); return;
+    case "verify": ui.sheet = ""; api("/api/verify"); return;
     case "stop": api("/api/stop"); return;
     case "dismiss": api("/api/dismiss"); return;
     case "refresh": api("/api/refresh"); return;
@@ -499,16 +599,21 @@ document.addEventListener("click", (ev) => {
 document.addEventListener("change", (ev) => {
   const el = ev.target;
   if (el.dataset.set === "kind") {
-    const kinds = [...document.querySelectorAll('[data-set="kind"]')].filter((x) => x.checked).map((x) => x.value);
-    if (!kinds.length) { el.checked = true; toast("Choose at least one thing to back up."); return; }
-    api("/api/settings", {kinds});
+    const kinds = new Set(S.settings.kinds);
+    el.checked ? kinds.add(el.value) : kinds.delete(el.value);
+    if (!kinds.size) { el.checked = true; toast("Choose at least one thing to copy."); return; }
+    api("/api/settings", {kinds: [...kinds]});
+  } else if (el.dataset.set === "skip") {
+    const skip = new Set(S.settings.skip[el.dataset.group]);
+    el.checked ? skip.delete(el.value) : skip.add(el.value);
+    setSkip(el.dataset.group, [...skip]);
   } else if (el.dataset.set === "evict") {
     api("/api/settings", {evict: el.checked});
   }
 });
 
 document.addEventListener("keydown", (ev) => {
-  if (ev.key === "Escape" && (ui.sheet || ui.drives)) { ui.sheet = false; ui.drives = false; render(); }
+  if (ev.key === "Escape" && (ui.sheet || ui.drives)) { ui.sheet = ""; ui.drives = false; render(); }
 });
 
 poll();

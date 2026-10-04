@@ -19,7 +19,10 @@ from ..backup import (
     summarize,
 )
 from ..migrate import diff_against_source, verify
+from .. import selection
 from ..photos import PhotosClient, PhotosError
+from ..scanner import DEFAULT_EXCLUDES
+from ..selection import LOOSE_FILES, UNKNOWN_YEAR, Selection, app_name, photo_year, top_level_groups
 from ..sources import (
     ALL_KINDS, APPS, BACKUPS_DIR, DRIVE, MESSAGES, PHOTOS, PHOTOS_DIR, Locations, folder_sources,
 )
@@ -163,7 +166,9 @@ class Service:
         self.popen = popen
         self.lock = threading.RLock()
         self.drive: Optional[Path] = None
-        self.settings = {"kinds": list(ALL_KINDS), "evict": False}
+        saved = selection.load(self.loc.config_file)
+        self.selection = Selection.from_dict(saved.get("selection", {}))
+        self.evict = bool(saved.get("evict", False))
         self.job: Optional[Job] = None
         self.overview: Optional[Dict[str, Any]] = None
         self.overview_key: Optional[str] = None
@@ -196,7 +201,7 @@ class Service:
                 "overview": overview,
                 "loading": self.refreshing or overview is None,
                 "job": self.job.snapshot() if self.job else None,
-                "settings": dict(self.settings),
+                "settings": {**self.selection.to_dict(), "evict": self.evict},
                 "notice": self.notice,
             }
 
@@ -267,27 +272,30 @@ class Service:
         if drive is not None:
             backups = layout.find_backups(drive)
             root = backups[-1] if backups else None
-        kinds = self.settings["kinds"]
-        sections = [self._photos_section(root), self._folder_section(DRIVE, root),
-                    self._folder_section(APPS, root), self._folder_section(MESSAGES, root),
+        sel = self.selection
+        sections = [self._photos_section(root, sel), self._folder_section(DRIVE, root, sel),
+                    self._folder_section(APPS, root, sel), self._folder_section(MESSAGES, root, sel),
                     self._iphone_section(root)]
         for s in sections:
-            if s["key"] in ALL_KINDS and s["key"] not in kinds and s["status"] != "empty":
-                s["status"], s["detail"] = "off", "Turned off in Settings"
+            if s["key"] in ALL_KINDS and s["key"] not in sel.kinds and s["status"] not in ("empty", "error"):
+                s["status"], s["detail"] = "off", "Not copying — stays in iCloud"
         needed = sum(s.get("needed", 0) for s in sections if s["status"] == "todo")
         free = shutil.disk_usage(drive).free if drive is not None and drive.is_dir() else 0
-        remaining = [s for s in sections if s["status"] not in ("done", "empty")]
+        remaining = [s for s in sections if s["status"] in ("todo", "error")]
+        done = [s for s in sections if s["status"] == "done"]
+        on = [s for s in sections if s["key"] in sel.kinds]
         return {
             "sections": sections,
-            "ready": root is not None and not remaining,
+            "ready": root is not None and not remaining and bool(done),
             "remaining": len(remaining),
-            "photos": next((s.get("count", 0) for s in sections if s["key"] == PHOTOS), 0),
-            "bytes": sum(s.get("bytes", 0) for s in sections),
+            "partial": any(s["status"] == "off" or s.get("skipped") for s in sections),
+            "photos": next((s.get("count", 0) for s in on if s["key"] == PHOTOS), 0),
+            "bytes": sum(s.get("bytes", 0) for s in on),
             "space": {"needed": needed, "free": free, "short": bool(drive) and needed > free},
             "computed": time.time(),
         }
 
-    def _photos_section(self, root: Optional[Path]) -> Dict[str, Any]:
+    def _photos_section(self, root: Optional[Path], sel: Selection) -> Dict[str, Any]:
         sec = {"key": PHOTOS, "label": LABELS[PHOTOS], "folder": str(root / PHOTOS_DIR) if root else None}
         if not self.photos.available:
             return {**sec, "status": "empty", "headline": "Needs the Photos app", "detail": ""}
@@ -299,23 +307,37 @@ class Service:
             return {**sec, "status": "error", "headline": "Can't open Photos",
                     "detail": "Allow Terminal to use Photos, then check again." if permission else first,
                     "action": {"label": "Open Settings", "open": "automation"} if permission else None}
-        sec.update(count=len(items), headline=_plural(len(items), "photo") + " & videos"
-                   if len(items) != 1 else "1 photo")
         if not items:
             return {**sec, "status": "empty", "headline": "No photos", "detail": ""}
+        years: Dict[str, int] = {}
+        for it in items:
+            y = photo_year(it.taken_at)
+            years[y] = years.get(y, 0) + 1
+        order = sorted((y for y in years if y != UNKNOWN_YEAR), reverse=True) + \
+            ([UNKNOWN_YEAR] if UNKNOWN_YEAR in years else [])
+        sec["choices"] = [{"id": y, "label": "Unknown date" if y == UNKNOWN_YEAR else y, "count": years[y],
+                           "on": y not in sel.skip_years} for y in order]
+        wanted = [it for it in items if sel.wants_photo(it.taken_at)]
+        skipped_years = sum(1 for c in sec["choices"] if not c["on"])
+        sec.update(count=len(wanted), skipped=skipped_years,
+                   headline=f"{len(wanted):,} photos & videos" if len(wanted) != 1 else "1 photo")
+        if not wanted:
+            return {**sec, "status": "off", "detail": "No years chosen — photos stay in iCloud"}
+        note = f" · {_plural(skipped_years, 'year')} skipped" if skipped_years else ""
         if root is None:
-            return {**sec, "status": "todo", "detail": "Not copied yet"}
+            return {**sec, "status": "todo", "detail": "Not copied yet" + note}
         state = layout.state_dir(root, PHOTOS_STATE)
-        check = readiness.photos_check(state, _Fixed(self.photos, items), "")
+        check = readiness.photos_check(state, _Fixed(self.photos, wanted), "")
         errors = []
         if mf.Manifest.exists(state):
             with mf.Manifest(state) as manifest:
                 errors = [{"name": pid, "error": err} for pid, err in manifest.photo_errors()[:MAX_ERRORS]]
         if check.status == readiness.OK:
-            return {**sec, "status": "done", "detail": "All copied", "errors": []}
-        return {**sec, "status": "todo", "detail": check.detail.replace(" photos & videos", ""), "errors": errors}
+            return {**sec, "status": "done", "detail": "All copied" + note, "errors": []}
+        return {**sec, "status": "todo", "detail": check.detail.replace(" photos & videos", "") + note,
+                "errors": errors}
 
-    def _folder_section(self, kind: str, root: Optional[Path]) -> Dict[str, Any]:
+    def _folder_section(self, kind: str, root: Optional[Path], sel: Selection) -> Dict[str, Any]:
         sources = folder_sources(self.loc, [kind])
         folder = None
         if root is not None:
@@ -327,40 +349,64 @@ class Service:
             return {**sec, "status": "error", "headline": "Needs permission",
                     "detail": "Turn on Full Disk Access for Terminal, then check again.",
                     "action": {"label": "Open Settings", "open": "fda"}}
+
         files = size = cloud = missing = changed = 0
         errors: List[Dict[str, str]] = []
-        apps = []
+        choices: List[Dict[str, Any]] = []
         for src in sources:
-            s = summarize(src.path)
-            files, size, cloud = files + s.files, size + s.total_bytes, cloud + s.cloud_bytes
-            if kind == APPS:
-                apps.append(src.dest_rel.split("/", 1)[1])
+            excludes = list(DEFAULT_EXCLUDES)
+            if kind == DRIVE:
+                groups = top_level_groups(src.path)
+                for name in sorted(groups, key=lambda n: (n == LOOSE_FILES, n.lower())):
+                    g = groups[name]
+                    choices.append({"id": name, "label": "Files not in a folder" if name == LOOSE_FILES else name,
+                                    "bytes": g.total_bytes, "files": g.files, "on": name not in sel.skip_drive})
+                excludes += sel.drive_excludes(src.path)
+                picked = [groups[c["id"]] for c in choices if c["on"]]
+                s_files = sum(g.files for g in picked)
+                s_size = sum(g.total_bytes for g in picked)
+                s_cloud = sum(g.cloud_bytes for g in picked)
+            else:
+                s = summarize(src.path)
+                s_files, s_size, s_cloud = s.files, s.total_bytes, s.cloud_bytes
+                if kind == APPS:
+                    choices.append({"id": app_name(src), "label": app_name(src), "bytes": s.total_bytes,
+                                    "files": s.files, "on": sel.wants_app(src)})
+                    if not sel.wants_app(src):
+                        continue
+            files, size, cloud = files + s_files, size + s_size, cloud + s_cloud
             if root is not None:
                 state = layout.state_dir(root, src.state_key)
-                d = diff_against_source(src.path, src.dest(root), state_dir=state)
+                d = diff_against_source(src.path, src.dest(root), excludes, state_dir=state)
                 missing, changed = missing + len(d.missing), changed + len(d.changed)
                 if mf.Manifest.exists(state):
                     with mf.Manifest(state) as manifest:
                         errors += [{"name": r.rel_path, "error": r.error or ""} for r in manifest.records(mf.FAILED)]
-        headline = f"{_plural(files, 'file')} · {_size(size)}"
-        sec.update(headline=headline, bytes=size, errors=errors[:MAX_ERRORS])
-        if kind == APPS and apps:
-            sec["apps"] = apps
+
+        skipped = sum(1 for c in choices if not c["on"])
+        if choices:
+            sec["choices"] = choices
+        sec.update(headline=f"{_plural(files, 'file')} · {_size(size)}", bytes=size, skipped=skipped,
+                   errors=errors[:MAX_ERRORS])
+        unit = "folder" if kind == DRIVE else "app"
+        note = f" · {_plural(skipped, unit)} skipped" if skipped else ""
+        if choices and skipped == len(choices):
+            return {**sec, "status": "off", "headline": "Nothing chosen", "detail": "Not copying — stays in iCloud"}
         if files == 0:
             return {**sec, "status": "empty", "headline": "Nothing to copy", "detail": ""}
         if root is None:
-            detail = "Not copied yet"
+            detail = "Not copied yet" + note
             if cloud:
-                detail += f" · {_size(cloud)} will be downloaded from iCloud first"
+                detail += f" · {_size(cloud)} to download from iCloud first"
             return {**sec, "status": "todo", "detail": detail, "needed": size}
         if not missing and not changed:
-            return {**sec, "status": "done", "detail": "All copied"}
+            return {**sec, "status": "done", "detail": "All copied" + note}
         parts = []
         if missing:
             parts.append(f"{_plural(missing, 'file')} not copied yet")
         if changed:
             parts.append(f"{_plural(changed, 'file')} changed since")
-        return {**sec, "status": "todo", "detail": " · ".join(parts), "needed": size if not root else 0}
+        return {**sec, "status": "todo", "detail": " · ".join(parts) + note}
 
     def _iphone_section(self, root: Optional[Path]) -> Dict[str, Any]:
         sec = {"key": "iphone", "label": LABELS["iphone"], "folder": str(root / BACKUPS_DIR) if root else None}
@@ -399,16 +445,32 @@ class Service:
             self.drive = p
             self.refresh()
 
-    def update_settings(self, kinds: Optional[List[str]] = None, evict: Optional[bool] = None) -> None:
+    def update_settings(self, kinds: Optional[List[str]] = None, evict: Optional[bool] = None,
+                        skip: Optional[Dict[str, List[str]]] = None) -> None:
         with self.lock:
+            self._require_idle()
             self._ensure_drive()
+            sel = Selection.from_dict(self.selection.to_dict())
             if kinds is not None:
-                bad = [k for k in kinds if k not in ALL_KINDS]
-                if bad or not kinds:
-                    raise ServiceError("Choose at least one thing to back up.")
-                self.settings["kinds"] = [k for k in ALL_KINDS if k in kinds]
+                if not isinstance(kinds, list) or any(k not in ALL_KINDS for k in kinds) or not kinds:
+                    raise ServiceError("Choose at least one thing to copy.")
+                sel.kinds = [k for k in ALL_KINDS if k in kinds]
+            if skip is not None:
+                if not isinstance(skip, dict):
+                    raise ServiceError("Unknown choice.")
+                if "drive" in skip:
+                    sel.skip_drive = [str(x) for x in skip["drive"]]
+                if "apps" in skip:
+                    sel.skip_apps = [str(x) for x in skip["apps"]]
+                if "years" in skip:
+                    sel.skip_years = [str(x) for x in skip["years"]]
+            self.selection = sel
             if evict is not None:
-                self.settings["evict"] = bool(evict)
+                self.evict = bool(evict)
+            try:
+                selection.save(self.loc.config_file, {"selection": sel.to_dict(), "evict": self.evict})
+            except OSError:
+                pass  # choices still apply for this session
             self.refresh()
 
     def start_backup(self, new: bool = False) -> None:
@@ -418,14 +480,14 @@ class Service:
             if self.drive is None:
                 raise ServiceError("Plug in your SSD first.")
             job = self.job = Job("backup")
-            drive, settings = self.drive, dict(self.settings)
-        threading.Thread(target=self._backup_worker, args=(job, drive, settings, new), daemon=True).start()
+            drive, sel, evict = self.drive, Selection.from_dict(self.selection.to_dict()), self.evict
+        threading.Thread(target=self._backup_worker, args=(job, drive, sel, evict, new), daemon=True).start()
 
-    def _backup_worker(self, job: Job, drive: Path, settings: Dict[str, Any], new: bool) -> None:
+    def _backup_worker(self, job: Job, drive: Path, sel: Selection, evict: bool, new: bool) -> None:
         self._keep_awake(True)
         try:
             opened = prepare(self.loc, drive, new=new)
-            opts = BackupOptions(kinds=settings["kinds"], evict_after=settings["evict"], cancel=job.cancel)
+            opts = BackupOptions(kinds=sel.kinds, evict_after=evict, cancel=job.cancel, selection=sel)
             results = run_backup(self.loc, opened.root, opts, JobReporter(job),
                                  photos_client=self.photos, icloud_client=self.icloud_client)
             failed = sum(len(r.errors) for r in results)

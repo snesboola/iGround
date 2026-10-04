@@ -43,6 +43,10 @@ class Locations:
         return self.home / "Library" / "Messages"
 
     @property
+    def config_file(self) -> Path:
+        return self.home / "Library" / "Application Support" / "iGround" / "settings.json"
+
+    @property
     def mobilesync_backup(self) -> Path:
         return self.home / "Library" / "Application Support" / "MobileSync" / "Backup"
 

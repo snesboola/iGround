@@ -100,7 +100,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/dismiss": s.dismiss,
             "/api/refresh": s.refresh,
             "/api/drive": lambda: s.select_drive(str(body.get("path", ""))),
-            "/api/settings": lambda: s.update_settings(body.get("kinds"), body.get("evict")),
+            "/api/settings": lambda: s.update_settings(body.get("kinds"), body.get("evict"), body.get("skip")),
             "/api/iphone": lambda: s.iphone(str(body.get("action", ""))),
             "/api/open": lambda: s.open(str(body.get("target", ""))),
         }

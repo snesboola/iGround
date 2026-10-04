@@ -55,7 +55,9 @@ class ServiceTests(AppHome):
         self.assertEqual(list(secs), ["photos", "drive", "apps", "messages", "iphone"])
         self.assertEqual(secs["photos"]["headline"], "4 photos & videos")
         self.assertEqual(secs["drive"]["status"], "todo")
-        self.assertEqual(secs["apps"]["apps"], ["Pages", "Notes"])
+        self.assertEqual([c["label"] for c in secs["apps"]["choices"]], ["Pages", "Notes"])
+        self.assertEqual([c["id"] for c in secs["drive"]["choices"]], ["Docs"])
+        self.assertEqual([c["label"] for c in secs["photos"]["choices"]], ["2023", "2021", "Unknown date"])
         self.assertEqual(secs["iphone"]["action"]["do"], "iphone-setup")
         self.assertFalse(st["overview"]["ready"])
 
@@ -161,6 +163,64 @@ class ServiceTests(AppHome):
         self.assertEqual(self.settle()["drive"]["name"], "Other")
         with self.assertRaises(ServiceError):
             self.svc.select_drive("/nope")
+
+
+class ChoiceTests(AppHome):
+    def setUp(self):
+        super().setUp()
+        (self.loc.drive / "Old Projects").mkdir()
+        (self.loc.drive / "Old Projects" / "big.mov").write_bytes(b"m" * 1000)
+        (self.loc.drive / "todo.txt").write_text("loose")
+
+    def test_skipped_things_are_not_copied_and_dont_block_ready(self):
+        self.svc.update_settings(skip={"drive": ["Old Projects"], "apps": ["Notes"], "years": ["2021"]})
+        secs = self.sections()
+        self.assertEqual(secs["drive"]["skipped"], 1)
+        self.assertIn("1 folder skipped", secs["drive"]["detail"])
+        self.assertEqual(secs["photos"]["count"], 2)  # 2023 Live Photo + unknown-date scan
+        self.assertEqual([c["on"] for c in secs["apps"]["choices"]], [True, False])
+
+        job = self.run_job(self.svc.start_backup)
+        self.assertEqual(job.state, "done", job.message)
+        root = layout.resolve(self.drive)
+        self.assertTrue((root / "iCloud Drive" / "Docs" / "cv.pdf").exists())
+        self.assertTrue((root / "iCloud Drive" / "todo.txt").exists())
+        self.assertFalse((root / "iCloud Drive" / "Old Projects").exists())
+        self.assertFalse((root / "App Documents" / "Notes").exists())
+        self.assertFalse((root / "Photos" / "2021").exists())
+        self.assertTrue((root / "Photos" / "2023").exists())
+
+        self.svc.iphone("setup")
+        write_backup(root / "iPhone Backups" / "0000", "iPhone", datetime.now())
+        self.svc.refresh()
+        st = self.settle()
+        self.assertTrue(st["overview"]["ready"], [(s["key"], s["status"], s["detail"]) for s in st["overview"]["sections"]])
+        self.assertTrue(st["overview"]["partial"])
+
+    def test_loose_files_and_whole_categories(self):
+        self.svc.update_settings(kinds=["drive"], skip={"drive": ["__files__"]})
+        secs = self.sections()
+        self.assertEqual(secs["photos"]["status"], "off")
+        self.assertEqual(secs["drive"]["choices"][-1]["label"], "Files not in a folder")
+        self.run_job(self.svc.start_backup)
+        root = layout.resolve(self.drive)
+        self.assertFalse((root / "iCloud Drive" / "todo.txt").exists())
+        self.assertTrue((root / "iCloud Drive" / "Old Projects" / "big.mov").exists())
+        self.assertFalse((root / "Photos").exists())
+
+    def test_choices_are_remembered(self):
+        self.svc.update_settings(kinds=["photos", "drive"], skip={"years": ["2021"]}, evict=True)
+        again = Service(self.loc, self.volumes, self.photos)
+        st = again.state()
+        self.assertEqual(st["settings"]["kinds"], ["drive", "photos"])
+        self.assertEqual(st["settings"]["skip"]["years"], ["2021"])
+        self.assertTrue(st["settings"]["evict"])
+
+    def test_bad_choices_rejected(self):
+        with self.assertRaises(ServiceError):
+            self.svc.update_settings(kinds=["whatsapp"])
+        with self.assertRaises(ServiceError):
+            self.svc.update_settings(skip="everything")
 
 
 class ServerTests(AppHome):

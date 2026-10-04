@@ -15,6 +15,7 @@ from .icloud import ICloudClient
 from .migrate import MigrationError, Migrator, Options
 from .photos import PhotosClient, PhotosError, PhotosExporter
 from .scanner import DEFAULT_EXCLUDES, Summary, scan
+from .selection import Selection
 from .ui import plural
 from .sources import (
     ALL_KINDS, APPS, APPS_DIR, BACKUPS_DIR, DRIVE, DRIVE_DIR, MESSAGES, MESSAGES_DIR, PHOTOS,
@@ -36,6 +37,7 @@ class BackupOptions:
     photos_batch: int = 25
     excludes: Sequence[str] = DEFAULT_EXCLUDES
     cancel: Optional[threading.Event] = None
+    selection: Optional[Selection] = None  # finer choices: folders, apps, photo years to skip
 
 
 @dataclass
@@ -85,6 +87,8 @@ def run_backup(
     reporter = reporter or Reporter()
     make_icloud = icloud_client or (lambda managed: ICloudClient() if managed else ICloudClient(brctl=""))
     folders = folder_sources(loc, opts.kinds)
+    if opts.selection is not None:
+        folders = [f for f in folders if opts.selection.wants_app(f)]
     total = len(folders) + (1 if PHOTOS in opts.kinds else 0)
     results: List[SectionResult] = []
     index = 0
@@ -100,13 +104,16 @@ def run_backup(
             break
         index += 1
         target = src.dest(root)
-        pre = summarize(src.path, opts.excludes)
+        excludes = list(opts.excludes)
+        if opts.selection is not None and src.kind == DRIVE:
+            excludes += opts.selection.drive_excludes(src.path)
+        pre = summarize(src.path, excludes)
         progress = reporter.section(src.label, index, total, pre.files + pre.symlinks, pre.total_bytes,
                                     kind=src.kind)
         options = Options(
             workers=opts.workers, verify=opts.verify, evict_after=opts.evict_after and src.icloud_managed,
             dry_run=opts.dry_run, force=opts.force, download_timeout=opts.download_timeout,
-            excludes=opts.excludes, cancel=opts.cancel,
+            excludes=excludes, cancel=opts.cancel,
         )
         try:
             res = Migrator(src.path, target, options, make_icloud(src.icloud_managed), progress,
@@ -151,6 +158,8 @@ def _photos(root: Path, opts: BackupOptions, reporter: Reporter, index: int, tot
         return result
     try:
         items = client.list_items()
+        if opts.selection is not None:
+            items = [it for it in items if opts.selection.wants_photo(it.taken_at)]
     except PhotosError as exc:
         reporter.section("Photos", index, total, 0, 0, kind=PHOTOS)
         result = SectionResult(PHOTOS, "Photos", target, False, f"could not open your Photos library: {exc}")
