@@ -80,7 +80,8 @@
 
   .mark { width: 22px; height: 22px; display: grid; place-items: center; }
   .mark.done { color: var(--ok); }
-  .mark.todo, .mark.off, .mark.empty { color: var(--faint); }
+  .mark.todo { color: var(--muted); }
+  .mark.off, .mark.empty { color: var(--faint); }
   .mark.error { color: var(--warn); }
   .mark.running svg { animation: spin 1s linear infinite; color: var(--fg); }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -191,12 +192,14 @@ function when(iso) {
   return d.toLocaleDateString(undefined, {day: "numeric", month: "short", year: d.getFullYear() === now.getFullYear() ? undefined : "numeric"});
 }
 
+// Status marks are deliberately unlike checkboxes: a dot, a bare tick, a dash. They show state;
+// choosing what to copy happens only in the "Choose what to copy" panel.
 const ICON = {
-  done: '<svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="9" fill="currentColor"/><path d="M6 10.3l2.6 2.5L14 7.4" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  todo: '<svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8.25" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>',
-  error: '<svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="9" fill="currentColor"/><path d="M10 5.5v5.2" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/><circle cx="10" cy="14" r="1.1" fill="#fff"/></svg>',
-  off: '<svg width="20" height="20" viewBox="0 0 20 20"><path d="M6 10h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
-  running: '<svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" stroke-opacity=".15" stroke-width="2"/><path d="M10 2a8 8 0 0 1 8 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+  done: '<svg width="20" height="20" viewBox="0 0 20 20" aria-label="Copied"><path d="M4.5 10.5l3.6 3.5L15.5 6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  todo: '<svg width="20" height="20" viewBox="0 0 20 20" aria-label="Not copied yet"><circle cx="10" cy="10" r="3.5" fill="currentColor"/></svg>',
+  error: '<svg width="20" height="20" viewBox="0 0 20 20" aria-label="Needs attention"><circle cx="10" cy="10" r="4.5" fill="currentColor"/></svg>',
+  off: '<svg width="20" height="20" viewBox="0 0 20 20" aria-label="Not copying"><path d="M6.5 10h7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  running: '<svg width="20" height="20" viewBox="0 0 20 20" aria-label="Copying"><circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-opacity=".15" stroke-width="2"/><path d="M10 3a7 7 0 0 1 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
 };
 ICON.empty = ICON.off;
 const CHEV = '<svg width="14" height="14" viewBox="0 0 14 14"><path d="M5 3l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
