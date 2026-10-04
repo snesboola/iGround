@@ -13,7 +13,7 @@ from typing import Callable, List, Optional, Sequence, Tuple
 from . import manifest as mf
 from .copier import copy_file, copy_symlink, hash_file
 from .icloud import ICloudClient
-from .scanner import DEFAULT_EXCLUDES, Entry, Kind, State, Summary, scan
+from .scanner import DEFAULT_EXCLUDES, Entry, Kind, State, Summary, is_excluded, scan
 
 # Keep a little headroom on the SSD rather than filling it to the last byte.
 SPACE_HEADROOM = 256 * 1024 * 1024
@@ -262,15 +262,20 @@ def diff_against_source(
     dest: Path,
     excludes: Sequence[str] = DEFAULT_EXCLUDES,
     state_dir: Optional[Path] = None,
+    entries: Optional[Sequence[Entry]] = None,
 ) -> Diff:
-    """Quick (no hashing) comparison of a source folder with what the manifest says is on the SSD."""
+    """Quick (no hashing) comparison of a source folder with what the manifest says is on the SSD.
+
+    Pass `entries` from an earlier scan of `source` to skip scanning it again; `excludes` still apply."""
     out = Diff()
     done = {}
     state_dir = Path(state_dir) if state_dir else mf.default_state_dir(dest)
     if mf.Manifest.exists(state_dir):
         with mf.Manifest(state_dir) as manifest:
             done = {r.rel_path: r for r in manifest.records() if r.status in mf.DONE_STATUSES}
-    for e in scan(Path(source), excludes):
+    found = scan(Path(source), excludes) if entries is None else \
+        (e for e in entries if not is_excluded(e.rel_path, excludes))
+    for e in found:
         rec = done.get(e.rel_path)
         if rec is None:
             out.missing.append(e.rel_path)

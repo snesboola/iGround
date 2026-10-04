@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 from . import icloud
-from .scanner import DEFAULT_EXCLUDES, Summary, scan
+from .scanner import DEFAULT_EXCLUDES, Entry, Summary, scan
 from .sources import ALL_KINDS, APPS, FolderSource
 
 LOOSE_FILES = "__files__"  # files sitting directly in iCloud Drive, not in a folder
@@ -82,10 +82,11 @@ def loose_file_names(root: Path) -> List[str]:
     return names
 
 
-def top_level_groups(root: Path, excludes: Sequence[str] = DEFAULT_EXCLUDES) -> Dict[str, Summary]:
+def top_level_groups(root: Path, excludes: Sequence[str] = DEFAULT_EXCLUDES,
+                     entries: Optional[Sequence[Entry]] = None) -> Dict[str, Summary]:
     """Size of each top-level folder in `root`; loose files are grouped under LOOSE_FILES."""
     groups: Dict[str, Summary] = {}
-    for e in scan(root, excludes):
+    for e in (scan(root, excludes) if entries is None else entries):
         key = e.rel_path.split("/", 1)[0] if "/" in e.rel_path else LOOSE_FILES
         groups.setdefault(key, Summary()).add(e)
     return groups

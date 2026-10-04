@@ -218,6 +218,13 @@ const DISK = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke
 
 async function api(path, body) {
   ui.pending = true;
+  if (path === "/api/settings" && S && body) {
+    // Show the new choice straight away; the server's answer confirms it a moment later.
+    if (body.kinds) S.settings.kinds = body.kinds;
+    if (body.skip) S.settings.skip = {...S.settings.skip, ...body.skip};
+    if (body.evict !== undefined) S.settings.evict = body.evict;
+    render();
+  }
   try {
     const res = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json", "X-IGround-Token": TOKEN},
                                    body: JSON.stringify(body || {})});
@@ -356,8 +363,17 @@ function tip() {
       <button class="link" data-act="tipseen">Got it</button></div></div></div>`;
 }
 
+const CHOOSABLE = ["photos", "drive", "apps", "messages"];
+
 function rowState(sec) {
   const j = job(), js = j && j.sections[sec.key];
+  if (CHOOSABLE.includes(sec.key) && S.settings && sec.status !== "empty" && sec.status !== "error") {
+    const on = S.settings.kinds.includes(sec.key);
+    if (!on) return {status: "off", js, detail: "Not copying — stays in iCloud"};
+    if (sec.status === "off" && sec.detail === "Not copying — stays in iCloud") {
+      return {status: "todo", js, detail: "Updating…"};  // just switched back on; totals arrive in a moment
+    }
+  }
   if (js && active() && js.status === "running") return {status: "running", js};
   if (js && j.kind === "verify" && js.status === "error") return {status: "error", js, verifyBad: true};
   return {status: sec.status, js};
@@ -374,9 +390,9 @@ function list() {
 }
 
 function row(sec) {
-  const {status, js, verifyBad} = rowState(sec);
+  const {status, js, verifyBad, detail} = rowState(sec);
   const open = ui.open.has(sec.key);
-  let sub = esc(sec.detail || ""), bar = "";
+  let sub = esc(detail || sec.detail || ""), bar = "";
   let subClass = status === "todo" && S.backup ? "todo" : status === "error" ? "error" : "";
   if (status === "running") {
     const frac = js.bytes_total ? js.bytes / js.bytes_total : (js.total ? js.done / js.total : 0);

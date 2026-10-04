@@ -21,7 +21,7 @@ from ..backup import (
 from ..migrate import diff_against_source, verify
 from .. import selection
 from ..photos import PhotosClient, PhotosError
-from ..scanner import DEFAULT_EXCLUDES
+from ..scanner import DEFAULT_EXCLUDES, Summary, scan
 from ..selection import LOOSE_FILES, UNKNOWN_YEAR, Selection, app_name, photo_year, top_level_groups
 from ..sources import (
     ALL_KINDS, APPS, BACKUPS_DIR, DRIVE, MESSAGES, PHOTOS, PHOTOS_DIR, Locations, folder_sources,
@@ -175,6 +175,11 @@ class Service:
         self.overview_key: Optional[str] = None
         self.refreshing = False
         self._refresh_again = False
+        # What was last read from iCloud. Changing what to copy reuses it instead of re-reading
+        # the Photos library and re-scanning iCloud Drive, which can take a while.
+        self._rescan = True
+        self._photos_cache: Optional[Any] = None  # list of items, or the PhotosError raised
+        self._scan_cache: Dict[str, List[Any]] = {}
         self.notice: Optional[Dict[str, Any]] = None
         self._notice_id = 0
         self._awake: Optional[subprocess.Popen] = None
@@ -242,9 +247,15 @@ class Service:
 
     # -- the overview: what's in iCloud and what's on the SSD ------------------
 
-    def refresh(self) -> None:
-        """Recompute the overview in the background (it may read the whole Photos library)."""
+    def refresh(self, rescan: bool = True) -> None:
+        """Recompute the overview in the background.
+
+        With `rescan`, re-read iCloud (the Photos library and every folder); without it, only
+        work out what changed using what was read last time.
+        """
         with self.lock:
+            if rescan:
+                self._rescan = True
             if self.refreshing:
                 self._refresh_again = True
                 return
@@ -256,8 +267,9 @@ class Service:
             with self.lock:
                 drive = self.drive
                 self._refresh_again = False
+                rescan, self._rescan = self._rescan, False
             try:
-                overview = self.compute_overview(drive)
+                overview = self.compute_overview(drive, rescan)
             except Exception as exc:  # keep the window alive whatever happens
                 traceback.print_exc()
                 overview = {"sections": [], "ready": False, "error": str(exc)}
@@ -268,14 +280,33 @@ class Service:
                     self.refreshing = False
                     return
 
-    def compute_overview(self, drive: Optional[Path]) -> Dict[str, Any]:
+    def _photo_items(self, rescan: bool) -> List[Any]:
+        if rescan or self._photos_cache is None:
+            try:
+                self._photos_cache = self.photos.list_items()
+            except PhotosError as exc:
+                self._photos_cache = exc
+        if isinstance(self._photos_cache, PhotosError):
+            raise self._photos_cache
+        return self._photos_cache
+
+    def _entries(self, path: Path, rescan: bool) -> List[Any]:
+        key = str(path)
+        if rescan or key not in self._scan_cache:
+            self._scan_cache[key] = list(scan(path, DEFAULT_EXCLUDES))
+        return self._scan_cache[key]
+
+    def _cache_warm(self) -> bool:
+        return self._photos_cache is not None and bool(self._scan_cache)
+
+    def compute_overview(self, drive: Optional[Path], rescan: bool = True) -> Dict[str, Any]:
         root = None
         if drive is not None:
             backups = layout.find_backups(drive)
             root = backups[-1] if backups else None
         sel = self.selection
-        sections = [self._photos_section(root, sel), self._folder_section(DRIVE, root, sel),
-                    self._folder_section(APPS, root, sel), self._folder_section(MESSAGES, root, sel),
+        sections = [self._photos_section(root, sel, rescan), self._folder_section(DRIVE, root, sel, rescan),
+                    self._folder_section(APPS, root, sel, rescan), self._folder_section(MESSAGES, root, sel, rescan),
                     self._iphone_section(root)]
         for s in sections:
             if s["key"] in ALL_KINDS and s["key"] not in sel.kinds and s["status"] not in ("empty", "error"):
@@ -296,12 +327,12 @@ class Service:
             "computed": time.time(),
         }
 
-    def _photos_section(self, root: Optional[Path], sel: Selection) -> Dict[str, Any]:
+    def _photos_section(self, root: Optional[Path], sel: Selection, rescan: bool) -> Dict[str, Any]:
         sec = {"key": PHOTOS, "label": LABELS[PHOTOS], "folder": str(root / PHOTOS_DIR) if root else None}
         if not self.photos.available:
             return {**sec, "status": "empty", "headline": "Needs the Photos app", "detail": ""}
         try:
-            items = self.photos.list_items()
+            items = self._photo_items(rescan)
         except PhotosError as exc:
             first = str(exc).splitlines()[0] if str(exc) else "Photos didn't respond"
             permission = "-1743" in str(exc) or "Automation" in str(exc) or "authorized" in str(exc).lower()
@@ -338,7 +369,7 @@ class Service:
         return {**sec, "status": "todo", "detail": check.detail.replace(" photos & videos", "") + note,
                 "errors": errors}
 
-    def _folder_section(self, kind: str, root: Optional[Path], sel: Selection) -> Dict[str, Any]:
+    def _folder_section(self, kind: str, root: Optional[Path], sel: Selection, rescan: bool) -> Dict[str, Any]:
         sources = folder_sources(self.loc, [kind])
         folder = None
         if root is not None:
@@ -357,7 +388,8 @@ class Service:
         for src in sources:
             excludes = list(DEFAULT_EXCLUDES)
             if kind == DRIVE:
-                groups = top_level_groups(src.path)
+                entries = self._entries(src.path, rescan)
+                groups = top_level_groups(src.path, entries=entries)
                 for name in sorted(groups, key=lambda n: (n == LOOSE_FILES, n.lower())):
                     g = groups[name]
                     choices.append({"id": name, "label": "Files not in a folder" if name == LOOSE_FILES else name,
@@ -368,7 +400,10 @@ class Service:
                 s_size = sum(g.total_bytes for g in picked)
                 s_cloud = sum(g.cloud_bytes for g in picked)
             else:
-                s = summarize(src.path)
+                entries = self._entries(src.path, rescan)
+                s = Summary()
+                for e in entries:
+                    s.add(e)
                 s_files, s_size, s_cloud = s.files, s.total_bytes, s.cloud_bytes
                 if kind == APPS:
                     choices.append({"id": app_name(src), "label": app_name(src), "bytes": s.total_bytes,
@@ -378,7 +413,7 @@ class Service:
             files, size, cloud = files + s_files, size + s_size, cloud + s_cloud
             if root is not None:
                 state = layout.state_dir(root, src.state_key)
-                d = diff_against_source(src.path, src.dest(root), excludes, state_dir=state)
+                d = diff_against_source(src.path, src.dest(root), excludes, state_dir=state, entries=entries)
                 missing, changed = missing + len(d.missing), changed + len(d.changed)
                 if mf.Manifest.exists(state):
                     with mf.Manifest(state) as manifest:
@@ -474,7 +509,12 @@ class Service:
             if evict is not None:
                 self.evict = bool(evict)
             self._save_settings()
-            self.refresh()
+            if self._cache_warm() and not self.refreshing:
+                # Fast path: nothing in iCloud changed, so answer with the new overview right away.
+                self.overview = self.compute_overview(self.drive, rescan=False)
+                self.overview_key = str(self.drive) if self.drive else ""
+            else:
+                self.refresh(rescan=False)
 
     def _save_settings(self) -> None:
         try:

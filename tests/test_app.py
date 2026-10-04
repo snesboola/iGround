@@ -216,6 +216,21 @@ class ChoiceTests(AppHome):
         self.assertEqual(st["settings"]["skip"]["years"], ["2021"])
         self.assertTrue(st["settings"]["evict"])
 
+    def test_changing_choices_is_instant_and_does_not_reread_icloud(self):
+        self.settle()
+        calls = []
+        original = self.photos.list_items
+        self.photos.list_items = lambda: (calls.append(1), original())[1]
+        self.svc.update_settings(kinds=["photos", "drive"], skip={"years": ["2021"]})
+        st = self.svc.state()  # no waiting: the answer already reflects the change
+        secs = {s["key"]: s for s in st["overview"]["sections"]}
+        self.assertEqual(secs["messages"]["status"], "off")
+        self.assertEqual(secs["photos"]["count"], 2)
+        self.assertEqual(calls, [])  # Photos library wasn't read again
+        self.svc.refresh()  # an explicit refresh does re-read it
+        self.settle()
+        self.assertEqual(len(calls), 1)
+
     def test_tip_dismissal_is_remembered(self):
         self.assertFalse(self.svc.state()["settings"]["tip_seen"])
         self.svc.update_settings(tip_seen=True)
