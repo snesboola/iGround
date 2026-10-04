@@ -514,7 +514,7 @@ function viewSheet() {
     <div class="opt"><span>What to copy<small>Pick photo years, iCloud Drive folders and apps.</small></span>
       <button class="chip" data-act="choose" ${active() ? "disabled" : ""}>Choose…</button></div>
     <h3>This Mac</h3>
-    <label class="opt"><span>Free up space on this Mac<small>Once a file is safely on the SSD, remove the downloaded copy from this Mac. It stays in iCloud.</small></span>
+    <label class="opt"><span>Remove downloads from this Mac<small>Same as Finder's “Remove Download”. Files stay in iCloud and on your SSD; only the extra copy on this Mac is cleared. Useful if your Mac is low on space.</small></span>
       <input type="checkbox" class="switch" data-set="evict" ${st.evict ? "checked" : ""} ${active() ? "disabled" : ""}></label>
     <h3>More</h3>
     <div class="opt"><span>Check every file<small>Re-read the backup to make sure nothing is damaged.</small></span>

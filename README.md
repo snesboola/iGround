@@ -56,7 +56,7 @@ The iGround window opens:
 - **iPhone & WhatsApp**: click the row → **Set up**, then back up your iPhone in Finder as the row describes, then click **Check again**.
 - When every row shows ✓, the title changes to **"Everything is on your SSD"**. Click **How?** for the steps to free up iCloud and downgrade.
 - **Update backup** copies only what's new or changed since last time. **Check files** re-reads every file on the SSD to make sure nothing is damaged.
-- **⚙ Settings**: free up space on the Mac as files are copied, start a separate backup, or move iPhone backups back to the Mac.
+- **⚙ Settings**: remove downloads from this Mac as files are copied (the same as Finder's "Remove Download": files stay in iCloud and on your SSD), start a separate backup, or move iPhone backups back to the Mac.
 
 The Terminal window that opens alongside keeps iGround running. Close it when you're done. The app follows your Mac's light or dark mode. If Google Chrome is installed, iGround opens in its own clean window; otherwise it opens in your default browser.
 
